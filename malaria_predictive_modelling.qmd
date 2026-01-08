@@ -33,6 +33,7 @@ library(gstat)
 library(corrr)
 library(lubridate)
 library(car)
+install.packages("terra")
 library(terra)
 ```
 
