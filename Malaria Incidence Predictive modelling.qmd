@@ -19,6 +19,7 @@ execute:
 
 Malaria remains one of the most persistent public health challenges in Malawi. Every year, thousands of people, especially children and pregnant women are at risk of this deadly disease. But what if we could predict malaria outbreaks before they happen? That’s exactly what our latest research aims to do, using the power of climate data and predictive modeling.
 
+#DATA CLEANING & ANALYSIS
 ## Importing Libraries
 
 Loading libraries into our work space which will be used for analysis purposes
@@ -51,7 +52,7 @@ library(terra)
 
 ```
 
-Loading in Malaria Data sets and merging the files
+##Loading in Malaria Data sets and merging the files
 
 ```{r}
 files <- list.files(pattern="*.xls")
@@ -65,7 +66,7 @@ dates_merged_df <- separate(merged_df, col=periodname, into=c("Month", "Year"), 
 dates_merged_df <- separate(dates_merged_df, col =orgunitlevel3, into = c("District", "facility"), sep = "-" )
 ```
 
-Renaming the NMCP OPD Confirmed Malaria Cases to remove spaces
+##Renaming the NMCP OPD Confirmed Malaria Cases to remove spaces
 
 ```{r}
 v1_merged_df <- dates_merged_df %>%
@@ -73,14 +74,14 @@ v1_merged_df <- dates_merged_df %>%
          "cluster" = "organisationunitname")
 ```
 
-getting only specific years from 2018 to 2024
+##getting only specific years from 2018 to 2024
 
 ```{r}
 summarized_df <- v1_merged_df %>%
   filter(Year >= 2018, Year <= 2024)
 ```
 
-Importing climate data into work space
+##Importing climate data into work space
 
 ```{r}
 lines <- readLines("Windspeed-2010-2025-Monthly.csv")
@@ -96,7 +97,7 @@ rain_df <-read_csv("Rainfall-Monthly_2010_2025.csv", skip = begin_data)
 hum_df <-read_csv("RHum-2010-2025-Monthly.csv")
 ```
 
-Changing all column names to lower case and Filtering period of analysis in climate data from 2018-2024
+##Changing all column names to lower case and Filtering period of analysis in climate data from 2018-2024
 
 ```{r}
 
@@ -129,9 +130,8 @@ temp_df <- temp_df %>%
   filter(year >= 2018, year <= 2024)
 ```
 
-Plotting incidence
 
-Merging auxiliary facilities/clusters to parent facilities
+##Merging auxiliary facilities/clusters to parent facilities
 
 ```{r}
 
@@ -148,7 +148,7 @@ malaria_df <- malaria_df %>%
 #names(malaria_df)
 ```
 
-Putting in a level factor so that months are ordered during plotting
+##Putting in a level factor so that months are ordered during plotting
 
 ```{r}
 malaria_df$month <- factor(malaria_df$month,
@@ -167,7 +167,7 @@ malaria_df %>%
   )
 
 ```
-
+##Plotting incidence from 2018-2024
 ```{r}
 #Lineplot showing highest points of incidence
 
@@ -280,6 +280,7 @@ ggplot(malaria_monthly_max, aes(x = date, y = max_incidence)) +
   expand_limits(y = max(malaria_monthly_max$max_incidence, na.rm = TRUE) * 1.1)  # make room for year labels
 ```
 
+#LOADING POPULATION DATA
 ```{r}
 
 
@@ -317,7 +318,7 @@ district_pop_list <- lapply(seq_along(pop_rasters), function(i) {
 
 district_pop_all <- dplyr::bind_rows(district_pop_list)
 ```
-
+##Creating an incidence per 1000 column
 ```{r}
 
 #changing name of population data per district
