@@ -1,4 +1,4 @@
-setwd("/Users/m1/Downloads/Research/")
+setwd("/Users/m1/Downloads/Research/Malaria-Incidence-Prediction/")
 
 #installing packages
 install.packages("readxl")
@@ -29,6 +29,8 @@ install.packages("lubridate")
 library(lubridate)
 install.packages("car")
 library(car)
+install.packages("terra")
+library(terra)
 
 
 #loading datasets and merging the files
@@ -110,7 +112,7 @@ begin_data <- grep("-END HEADER-", lines)
 wind_df <- read_csv("Windspeed-2010-2025-Monthly.csv", skip = begin_data)
 temp_df <-read_csv("Temperature-2010-2025-Monthly.csv", skip = begin_data)
 rain_df <-read_csv("Rainfall-Monthly_2010_2025.csv", skip = begin_data)
-hum_df <-read_csv("Humidity-2010-2025-Monthly.csv", skip = begin_data)
+hum_df <-read_csv("RHum-2010-2025-Monthly.csv")
 head(temp_df)
 head(rain_df)
 head(hum_df)
@@ -129,7 +131,6 @@ glimpse(malaria_df)
 
 #changing all columns to lower letters in malaria data
 names(malaria_df) <- tolower(names(malaria_df))
-
 #changing all names to lowercase for climate data
 names(wind_df) <- tolower(names(wind_df))
 names(rain_df) <- tolower(names(rain_df))
@@ -155,6 +156,8 @@ rain_df <- rain_df[ , !(names(rain_df) %in% c("ann"))]
 hum_df <- hum_df[ , !(names(hum_df) %in% c("ann"))]
 wind_df <- wind_df[ , !(names(wind_df) %in% c("ann"))]
 
+hum_df <- hum_df %>%
+  rename("parameter" = "parameter-hum")
 
 #checking column names as merging was becoming an issue and found out the header row is bringing problems
 colnames(malaria_df)
@@ -162,6 +165,9 @@ colnames(wind_df)
 colnames(hum_df)
 colnames(rain_df)
 colnames(temp_df)
+
+hum_df <- hum_df %>%
+  rename("parameter" = "parameter-hum")
 
 #changing month to date time to plot in order
 malaria_df$date <- as.Date(paste("01", malaria_df$month, malaria_df$year),
@@ -270,6 +276,7 @@ wind_long <- melt(wind_df,
                   variable.name = "month",
                   value.name = "windspeed")
 
+
 #converting month names to number and creating a date column
 climate_list <- list(rain_long, hum_long, temp_long, wind_long)
 
@@ -349,7 +356,7 @@ unique(climate_df$district)
 
 ggplot() +
   geom_sf(data = districts, fill = NA, color = "black") +
-  geom_sf_text(data = districts, aes(label = ADM2_EN), size = 3, color = "blue") +
+  geom_sf_text(data = districts, aes(label = ADM2_EN), size = 2, color = "blue") +
   theme_minimal() +
   labs(title = "Malawi Districts", caption = "Source: Malawi shapefile")
 
@@ -523,7 +530,6 @@ ggplot(cor_long, aes(x = climate_variable, y = district, fill = correlation)) +
 
 #creating month lags for climate variables vs incidence
 #create monthly lags 1 - 5
-
 
 # 1. Define helper functions
 
@@ -856,7 +862,7 @@ merged_df <- merged_df %>%
     expm1(predict(lm_log, newdata = cur_data()))
   ))
 
-#Key Takeaways from your model now:
+#Key Takeaways from the model now:
 #All climate variables are statistically significant after the log-transform.
 #Temperature and rainfall have a negative effect on incidence.
 #Humidity and windspeed have a positive effect.
