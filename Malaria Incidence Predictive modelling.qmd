@@ -1,0 +1,951 @@
+---
+title: "Climatic based Malaria Incidence prediction in Malawi"
+author:
+  name: Doreen A. Ndovie, Dr Sureni Wickramasooria, Nicholas S. Adam PhD
+  
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+format:
+  html:
+    toc: true
+    toc-depth: 2
+link-citations: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Project Description
+
+Malaria remains one of the most persistent public health challenges in Malawi. Every year, thousands of people, especially children and pregnant women are at risk of this deadly disease. But what if we could predict malaria outbreaks before they happen? That’s exactly what our latest research aims to do, using the power of climate data and predictive modeling.
+
+## Importing Libraries
+
+Loading libraries into our work space which will be used for analysis purposes
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+library(lubridate) #dealing with dates
+library(broom)
+library(dplyr)
+library(stringr)
+library(scales)
+library(patchwork)
+library(tseries)
+library(forecast)
+library(kableExtra)
+library(readxl)
+library(purrr)
+library(stringi)
+library(imputeTS)
+library(data.table)
+library(writexl)
+library(sf)
+library(gstat)
+library(corrr)
+library(lubridate)
+library(car)
+library(grid)
+library(terra)
+
+```
+
+Loading in Malaria Data sets and merging the files
+
+```{r}
+files <- list.files(pattern="*.xls")
+
+merged_df <- files %>% 
+  map_dfr(read_excel)
+
+merged_df <- merged_df[ , !(names(merged_df) %in% 
+                              c("orgunitlevel1", "orgunitlevel2", "orgunitlevel4", "NMCP IPD Confirmed Malaria Cases", "NMCP IPD Total Malaria Deaths"))]
+dates_merged_df <- separate(merged_df, col=periodname, into=c("Month", "Year"), sep=" ")
+dates_merged_df <- separate(dates_merged_df, col =orgunitlevel3, into = c("District", "facility"), sep = "-" )
+```
+
+Renaming the NMCP OPD Confirmed Malaria Cases to remove spaces
+
+```{r}
+v1_merged_df <- dates_merged_df %>%
+  rename("Incidence" = "NMCP OPD Confirmed Malaria Cases", 
+         "cluster" = "organisationunitname")
+```
+
+getting only specific years from 2018 to 2024
+
+```{r}
+summarized_df <- v1_merged_df %>%
+  filter(Year >= 2018, Year <= 2024)
+```
+
+Importing climate data into work space
+
+```{r}
+lines <- readLines("Windspeed-2010-2025-Monthly.csv")
+
+begin_data <- grep("-END HEADER-", lines)
+
+wind_df <- read_csv("Windspeed-2010-2025-Monthly.csv", skip = begin_data)
+
+temp_df <-read_csv("Temperature-2010-2025-Monthly.csv", skip = begin_data)
+
+rain_df <-read_csv("Rainfall-Monthly_2010_2025.csv", skip = begin_data)
+
+hum_df <-read_csv("RHum-2010-2025-Monthly.csv")
+```
+
+Changing all column names to lower case and Filtering period of analysis in climate data from 2018-2024
+
+```{r}
+
+#writing it the Malaria data as csv and viewing resaving it
+write.csv(summarized_df, "malaria.csv", row.names = FALSE)
+malaria_df <- read_csv("malaria.csv")
+glimpse(malaria_df)
+
+names(malaria_df) <- tolower(names(malaria_df))
+names(wind_df) <- tolower(names(wind_df))
+names(rain_df) <- tolower(names(rain_df))
+names(hum_df) <- tolower(names(hum_df))
+names(temp_df) <- tolower(names(temp_df))
+
+str(rain_df$year)
+
+```
+
+```{r}
+wind_df <- wind_df %>%
+  filter(year >= 2018, year <= 2024)
+
+rain_df <- rain_df %>%
+  filter(year >= 2018, year <= 2024)
+
+hum_df <- hum_df %>%
+  filter(year >= 2018, year <= 2024)
+
+temp_df <- temp_df %>%
+  filter(year >= 2018, year <= 2024)
+```
+
+Plotting incidence
+
+Merging auxiliary facilities/clusters to parent facilities
+
+```{r}
+
+malaria_df <- malaria_df %>%
+  mutate(district = case_when(
+    district == "Queen Elizabeth Central Hospital" ~ "Blantyre",
+    district == "Zomba Mental Hospital" ~ "Zomba",
+    district == "Zomba Central Hospital" ~ "Zomba",
+    district == "Nkhata" ~ "Nkhatabay",
+    district == "Mzuzu Central Hospital" ~ "Mzuzu",
+    TRUE ~ district #keeping all other names unchanged
+  ))
+
+#names(malaria_df)
+```
+
+Putting in a level factor so that months are ordered during plotting
+
+```{r}
+malaria_df$month <- factor(malaria_df$month,
+                           levels = c("January","February","March","April","May","June",
+                                      "July","August","September","October","November","December"))
+```
+
+```{r}
+#Summary of values in the malaria dataframe
+malaria_df %>% 
+  summarise(
+    min_incidence  = min(incidence, na.rm = TRUE),
+    max_incidence  = max(incidence, na.rm = TRUE),
+    mean_incidence = mean(incidence, na.rm = TRUE),
+    sd_incidence   = sd(incidence, na.rm = TRUE)
+  )
+
+```
+
+```{r}
+#Lineplot showing highest points of incidence
+
+
+malaria_df$year <- as.numeric(as.character(malaria_df$year))
+malaria_max <- malaria_df %>%
+  group_by(year) %>%
+  summarise(
+    max_incidence = max(incidence, na.rm = TRUE),
+    .groups = "drop"
+  )
+ggplot(malaria_max, aes(x = year, y = max_incidence)) +
+  geom_line(linewidth = 1.2, color = "darkred") +
+  geom_point(size = 2, color = "darkred") +
+  theme_minimal() +
+  labs(
+    title = "Malaria Incidence by Year 2018-2024",
+    x = "Year",
+    y = "Incidence"
+  )
+
+
+
+```
+
+```{r}
+
+# -----------------------------
+# 1. Filter data for 2018–2024
+# -----------------------------
+malaria_df <- malaria_df %>%
+  mutate(year = as.numeric(year)) %>%
+  filter(year >= 2018 & year <= 2024)
+
+# -----------------------------
+# 2. Convert months to numbers and create date
+# -----------------------------
+malaria_df <- malaria_df %>%
+  mutate(
+    month_num = match(tolower(trimws(month)), tolower(month.name)),
+    date = as.Date(paste(year, month_num, "01", sep = "-"))
+  )
+
+# -----------------------------
+# 3. Compute monthly peak incidence
+# -----------------------------
+malaria_monthly_max <- malaria_df %>%
+  group_by(date) %>%
+  summarise(
+    max_incidence = max(incidence, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# -----------------------------
+# 4. Ensure full monthly timeline (2018–2024)
+# -----------------------------
+full_dates <- data.frame(
+  date = seq(as.Date("2018-01-01"), as.Date("2024-12-01"), by = "month")
+)
+
+malaria_monthly_max <- full_dates %>%
+  left_join(malaria_monthly_max, by = "date")
+
+# -----------------------------
+# 5. Create labels for months and year
+# -----------------------------
+malaria_monthly_max <- malaria_monthly_max %>%
+  mutate(
+    month_label = format(date, "%b"),               # Jan, Feb, ...
+    year_label = ifelse(format(date, "%m") == "01", format(date, "%Y"), "")
+  )
+
+# -----------------------------
+# 6. Identify positions for vertical grid lines (start of each year)
+# -----------------------------
+year_start_dates <- malaria_monthly_max$date[format(malaria_monthly_max$date, "%m") == "01"]
+
+# -----------------------------
+# 7. Plot
+# -----------------------------
+ggplot(malaria_monthly_max, aes(x = date, y = max_incidence)) +
+  geom_line(color = "darkred", linewidth = 1.2, na.rm = TRUE) +
+  geom_point(color = "darkred", size = 1.8, na.rm = TRUE) +
+  # vertical lines to mark start of each year
+  geom_vline(xintercept = as.numeric(year_start_dates), color = "grey50", linetype = "dashed") +
+  # x-axis formatting
+  scale_x_date(
+    breaks = malaria_monthly_max$date,
+    labels = malaria_monthly_max$month_label,
+    limits = c(as.Date("2018-01-01"), as.Date("2024-12-01"))
+  ) +
+  # Add year labels as horizontal text above plot
+  annotate("text",
+           x = year_start_dates,
+           y = max(malaria_monthly_max$max_incidence, na.rm = TRUE) * 1.05,
+           label = format(year_start_dates, "%Y"),
+           vjust = 0,
+           hjust = 0.5,
+           size = 3.5) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 60, hjust = 1, size = 5),
+    panel.grid.minor.x = element_blank()
+  ) +
+  labs(
+    title = "Malaria Incidence (2018–2024)",
+    x = "Month",
+    y = "Incidence"
+  ) +
+  expand_limits(y = max(malaria_monthly_max$max_incidence, na.rm = TRUE) * 1.1)  # make room for year labels
+```
+
+```{r}
+
+
+# Load population rasters
+
+tif_files <- list.files("population/", pattern = "\\.tif$", full.names = TRUE)
+pop_rasters <- lapply(tif_files, terra::rast)
+
+# Extract year from filename
+years <- gsub("[^0-9]", "", basename(tif_files)) |> as.numeric()
+
+# Load Malawi districts
+districts <- terra::vect("mwi_adm_nso_hotosm_20230405_shp/mwi_admbnda_adm2_nso_hotosm_20230405.shp")
+
+# Reproject districts to match raster CRS
+districts <- project(districts, pop_rasters[[1]])
+
+# Identify correct district column
+names(districts)   # LOOK HERE
+district_col <- "ADM2_EN"   # change based on actual name
+
+# Extract population for each raster
+district_pop_list <- lapply(seq_along(pop_rasters), function(i) {
+  r <- pop_rasters[[i]]
+  yr <- years[i]
+
+  vals <- terra::extract(r, districts, fun = sum, na.rm = TRUE)
+
+  data.frame(
+    district = districts[[district_col]],
+    year = yr,
+    population = vals[,2]
+  )
+})
+
+district_pop_all <- dplyr::bind_rows(district_pop_list)
+```
+
+```{r}
+
+#changing name of population data per district
+district_df <- district_pop_all %>% 
+  rename(district = ADM2_EN)
+
+
+malaria_with_pop <- malaria_df %>%
+  left_join(district_df, by = c("district", "year"))
+
+# 1. Create incidence per 1,000
+malaria_with_pop <- malaria_with_pop %>%
+  mutate(incidence_per_1k = (incidence / population) * 1000)
+
+#view(malaria_with_pop)
+```
+
+```{r}
+# Ensure month is ordered
+malaria_with_pop$month <- factor(malaria_with_pop$month,
+                            levels = c("January","February","March","April","May","June",
+                                       "July","August","September","October","November","December"))
+```
+
+```{r}
+
+#checking districts with highest incidence values:
+monthly_year_district <- malaria_with_pop %>%
+  group_by(district, year, month) %>%
+  summarise(Total_Incidence = sum(incidence_per_1k, na.rm = TRUE), .groups = "drop")
+
+# Heatmap faceted by district
+ggplot(monthly_year_district, aes(x = month, y = factor(year), fill = Total_Incidence)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightyellow", high = "steelblue") +
+  facet_wrap(~district, scales = "free_y") +
+  labs(title = "Monthly Incidence per District per 1,000 (2018–2024)",
+       x = "Month",
+       y = "Year",
+       fill = "Incidence") +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 5),
+    axis.text.y = element_text(size = 12),
+    axis.title = element_text(size = 10, face = "bold"),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 12),
+    strip.text = element_text(face = "bold", size = 8),
+    plot.title = element_text(face = "bold", size = 10, hjust = 0.5)
+  )
+
+```
+
+```{r}
+#view(hum_df)
+
+#removing the column annual from the climate datasets
+temp_df <- temp_df[ , !(names(temp_df) %in% c("ann"))] 
+rain_df <- rain_df[ , !(names(rain_df) %in% c("ann"))] 
+hum_df <- hum_df[ , !(names(hum_df) %in% c("ann"))]
+wind_df <- wind_df[ , !(names(wind_df) %in% c("ann"))]
+hum_df <- hum_df %>% 
+  rename("parameter" = "parameter-hum")
+```
+
+```{r}
+unique(malaria_with_pop$district)
+```
+
+```{r}
+#converting climate datasets to data.table
+setDT(rain_df)
+setDT(wind_df)
+setDT(temp_df)
+setDT(hum_df)
+
+#reshaping to long format using melt
+months <- c("jan","feb","mar","apr","may","jun",
+            "jul","aug","sep","oct","nov","dec")
+
+
+rain_long <- melt(rain_df,
+                  id.vars = c("year","lat","lon"),
+                  measure.vars = months,
+                  variable.name = "month",
+                  value.name = "rainfall")
+
+hum_long <- melt(hum_df,
+                 id.vars = c("year","lat","lon"),
+                 measure.vars = months,
+                 variable.name = "month",
+                 value.name = "humidity")
+
+temp_long <- melt(temp_df,
+                  id.vars = c("year","lat","lon"),
+                  measure.vars = months,
+                  variable.name = "month",
+                  value.name = "temperature")
+
+wind_long <- melt(wind_df,
+                  id.vars = c("year","lat","lon"),
+                  measure.vars = months,
+                  variable.name = "month",
+                  value.name = "windspeed")
+```
+
+```{r}
+#converting month names to number and creating a date column
+climate_list <- list(rain_long, hum_long, temp_long, wind_long)
+
+for(i in seq_along(climate_list)){
+  climate_list[[i]][, month_num := match(tolower(month), tolower(month.abb))]
+  climate_list[[i]][, date := as.Date(paste(year, month_num, "01", sep = "-"))]
+}
+
+# Assign back
+rain_long <- climate_list[[1]]
+hum_long  <- climate_list[[2]]
+temp_long <- climate_list[[3]]
+wind_long <- climate_list[[4]]
+
+#keeping only necessary columns
+rain_long <- rain_long[,  .(year, lat, lon, month, date, rainfall)]
+hum_long  <- hum_long[,   .(year, lat, lon, month, date, humidity)]
+temp_long <- temp_long[,  .(year, lat, lon, month, date, temperature)]
+wind_long <- wind_long[,  .(year, lat, lon, month, date, windspeed)]
+
+#merging climate datasets
+climate_df <- merge(rain_long, hum_long,
+                    by = c("year","lat","lon","month","date"), all = TRUE)
+climate_df <- merge(climate_df, temp_long,
+                    by = c("year","lat","lon","month","date"), all = TRUE)
+climate_df <- merge(climate_df, wind_long,
+                    by = c("year","lat","lon","month","date"), all = TRUE)
+head(climate_df)
+```
+
+```{r}
+#Geolocating points in the climate data and linking it to distrits for merging with the malaria data
+
+# Load Malawi districts shapefile
+
+districts <- st_read("mwi_adm_nso_hotosm_20230405_shp/mwi_admbnda_adm2_nso_hotosm_20230405.shp")
+
+# Transform to same CRS as your climate points
+districts <- st_transform(districts, crs = 4326)  # WGS84
+
+
+# 2. Convert climate dataframe to sf
+
+# Replace 'climate_df_raw' with your actual dataframe
+climate_sf <- st_as_sf(climate_df, coords = c("lon", "lat"), crs = 4326)
+
+
+# 3. Spatial join with districts (buffer + nearest fallback)
+
+# First, buffer districts slightly to catch edge points
+malawi_buffered <- st_buffer(districts, dist = 0.01)
+
+# Initial join using buffer
+points_with_district <- st_join(climate_sf, malawi_buffered["ADM2_EN"], join = st_within)
+
+# Handle points still NA (nearest district)
+na_points <- points_with_district[is.na(points_with_district$ADM2_EN), ]
+nearest_index <- st_nearest_feature(na_points, districts)
+na_points$ADM2_EN <- districts$ADM2_EN[nearest_index]
+points_with_district$ADM2_EN[is.na(points_with_district$ADM2_EN)] <- na_points$ADM2_EN
+
+
+# 4. Clean dataframe
+colnames(points_with_district)
+head(points_with_district)
+
+
+
+```
+
+```{r}
+
+district_df <- district_pop_all %>% 
+  rename(district = ADM2_EN)
+
+head(district_df)
+
+view(district_df)
+
+```
+
+
+```{r}
+
+# 2. Ensure month is ordered
+malaria_with_pop$month <- factor(malaria_with_pop$month, levels = month.name)
+
+# 3. Summarize incidence per district per month
+monthly_district_norm <- malaria_with_pop %>%
+  group_by(district, month) %>%
+  summarise(Incidence_per_1k = sum(incidence_per_1k, na.rm = TRUE),
+            .groups = "drop")
+
+# 4. Plot heatmap
+ggplot(monthly_district_norm, aes(x = month, y = district, fill = Incidence_per_1k)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightyellow", high = "steelblue", name = "Incidence\n(per 1,000)") +
+  labs(title = "Monthly Malaria Incidence per District (per 1,000 people)",
+       x = "Month",
+       y = "District") +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.title.x = element_text(size = 12, face = "bold"),
+    axis.title.y = element_text(size = 12, face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    axis.text.y = element_text(size = 8),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 8),
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5)
+  )
+```
+
+```{r}
+#merging these into incidence dataset
+malaria_df$district  # district names
+malaria_df$year
+malaria_df$total_incidence
+
+```
+
+```{r}
+climate_df <- points_with_district %>%
+  st_drop_geometry() %>%
+  select(year, month, date, rainfall, humidity, temperature, windspeed, ADM2_EN) %>%
+  rename(district = ADM2_EN)
+
+# Check results
+head(climate_df)
+unique(climate_df$district)
+```
+
+```{r}
+# 5. Plot Malawi map with district labels
+districts_sf <- st_as_sf(districts)
+
+# Plot
+ggplot() +
+  geom_sf(data = districts_sf, fill = NA, color = "black") +
+  geom_sf_text(data = districts_sf, aes(label = ADM2_EN), size = 2, color = "blue") +
+  theme_minimal() +
+  labs(title = "Malawi Districts", caption = "Source: Malawi shapefile")
+
+
+
+```
+
+```{r}
+#merging climate with malaria data
+setDT(malaria_with_pop)
+head(malaria_with_pop)
+head(malaria_with_pop)
+
+#merging the climate and malaria data
+# Make sure the date columns are Date type
+malaria_with_pop$date <- as.Date(malaria_with_pop$date)
+climate_df$date <- as.Date(climate_df$date)
+climate_df <- climate_df %>%
+  mutate(month = month.name[match(tolower(month), tolower(month.abb))])
+
+
+malaria_with_pop <- malaria_with_pop %>% mutate(year = as.numeric(as.character(year)))
+climate_df <- climate_df %>% mutate(year = as.numeric(as.character(year)))
+
+head(climate_df)
+
+# Join datasets by district and date
+merged_df <- malaria_with_pop %>%
+  left_join(climate_df, by = c("district", "date", "year","month"))
+
+
+# Checking result of merge
+head(merged_df)
+```
+
+```{r}
+# Summarize incidence per district per year
+yearly_district <- malaria_with_pop %>%
+  group_by(district, year) %>%
+  summarise(Total_Incidence = sum(incidence_per_1k, na.rm = TRUE), .groups = "drop")
+
+# Make year a factor for proper ordering
+yearly_district$year <- factor(yearly_district$year, levels = 2018:2025)
+
+# Heatmap
+ggplot(yearly_district, aes(x = year, y = district, fill = Total_Incidence)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightyellow", high = "steelblue") +
+  labs(title = "Annual Incidence per District per 1,000 (2018–2024)",
+       x = "Year",
+       y = "District",
+       fill = "Incidence") +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.title.x = element_text(size = 10, face = "bold"),
+    axis.title.y = element_text(size = 10, face = "bold"),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 8),
+    legend.title = element_text(size = 10),
+    legend.text = element_text(size = 8),
+    plot.title = element_text(face = "bold", size = 10, hjust = 0.5)
+  )
+
+```
+
+```{r}
+# 1. Convert SpatVector to sf
+districts_sf <- st_as_sf(districts)
+
+# 2. Aggregate malaria incidence
+malaria_agg <- malaria_with_pop %>%
+  group_by(district, year) %>%
+  summarise(total_incidence = sum(incidence_per_1k, na.rm = TRUE)) %>%
+  ungroup()
+
+# 3. Join with districts
+malaria_map_data <- districts_sf %>%
+  left_join(malaria_agg, by = c("ADM2_EN" = "district")) %>%
+  filter(!is.na(total_incidence))
+
+# 4. Plot choropleth
+ggplot(malaria_map_data) +
+  geom_sf(aes(fill = total_incidence), color = "black", size = 0.2) +
+  scale_fill_gradient(low = "#FFF7BC", high = "#D95F0E", name = "Incidence") +
+  theme_minimal() +
+  labs(title = "Malaria Incidence per District in Malawi (2018-2024)") +
+  facet_wrap(~ year) +
+  theme(
+    axis.text = element_blank(),
+    axis.ticks = element_blank(),
+    panel.grid = element_blank()
+  )
+```
+
+```{r}
+#making correlation for incidence with climate variables
+# Define climate variables
+climate_vars <- c("rainfall", "humidity", "temperature", "windspeed")
+
+# Function to compute correlation and p-value safely
+cor_test_safe <- function(x, y) {
+  if(sum(!is.na(x) & !is.na(y)) > 1) {
+    test <- cor.test(x, y, use = "complete.obs")
+    tibble(correlation = test$estimate, p_value = test$p.value)
+  } else {
+    tibble(correlation = NA_real_, p_value = NA_real_)
+  }
+}
+
+# Compute correlation and p-value per district and variable
+correlation_per_district <- merged_df %>%
+  group_by(district) %>%
+  summarise(
+    across(
+      all_of(climate_vars),
+      ~ list(cor_test_safe(incidence, .x)), 
+      .names = "{.col}"
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(across(all_of(climate_vars), ~ map_dfr(.x, ~.x))) %>%
+  unnest(cols = everything(), names_sep = "_")
+
+
+# Reshape to long format
+cor_long <- correlation_per_district %>%
+  pivot_longer(
+    cols = matches(paste0("^(", paste(climate_vars, collapse = "|"), ")_")),
+    names_to = c("climate_variable", ".value"),
+    names_sep = "_"
+  ) %>%
+  filter(!is.na(correlation))
+
+
+# Function to convert p-values to significance stars
+p_to_stars <- function(p) {
+  case_when(
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    p < 0.1   ~ ".",
+    TRUE      ~ ""
+  )
+}
+
+colnames(cor_long)
+cor_long <- cor_long %>%
+  mutate(stars = p_to_stars(p))
+
+# Plot heatmap with correlation and stars
+ggplot(cor_long, aes(x = climate_variable, y = district, fill = correlation)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = stars), color = "black", size = 5) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, name = "Correlation") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    title = "Correlation of Malaria Incidence vs Climate Variables per District",
+    x = "Climate Variable",
+    y = "District",
+    subtitle = "Significance indicated by stars: *** p<0.001, ** p<0.01, * p<0.05, . p<0.1"
+  )
+```
+
+```{r}
+#creating month lags for climate variables vs incidence
+#create monthly lags 1 - 5
+
+# 1. Define helper functions
+
+# Safe correlation test (returns tibble even if correlation fails)
+cor_test_safe <- function(x, y) {
+  tryCatch({
+    res <- cor.test(x, y, method = "pearson")
+    tibble(correlation = unname(res$estimate),
+           p_value = res$p.value)
+  }, error = function(e) tibble(correlation = NA, p_value = NA))
+}
+
+# Convert p-values to significance stars
+p_to_stars <- function(p) {
+  case_when(
+    is.na(p) ~ "",
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    p < 0.1   ~ ".",
+    TRUE ~ ""
+  )
+}
+
+
+# 2. Define climate variables
+
+climate_vars <- c("rainfall", "humidity", "temperature", "windspeed")
+
+
+# 3. Create lagged climate variables (1–5 months)
+
+lagged_df <- merged_df %>%
+  group_by(district) %>%
+  arrange(date, .by_group = TRUE) %>%
+  mutate(across(
+    all_of(climate_vars),
+    list(
+      lag1 = ~lag(.x, 1),
+      lag2 = ~lag(.x, 2),
+      lag3 = ~lag(.x, 3),
+      lag4 = ~lag(.x, 4),
+      lag5 = ~lag(.x, 5),
+      lag6 = ~lag(.x, 6)
+    ),
+    .names = "{.col}_{.fn}"
+  )) %>%
+  ungroup()
+
+
+# 4. Compute correlations for each district and lag
+
+climate_lag_vars <- grep("rainfall|humidity|temperature|windspeed", names(lagged_df), value = TRUE)
+
+correlation_lags <- lagged_df %>%
+  group_by(district) %>%
+  summarise(
+    across(
+      all_of(climate_lag_vars),
+      ~ list(cor_test_safe(incidence, .x)), 
+      .names = "{.col}"
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(across(all_of(climate_lag_vars), ~ map_dfr(.x, ~.x))) %>%
+  unnest(cols = everything(), names_sep = "_")
+
+
+# 5. Reshape to long format for plotting/analysis
+
+cor_long_lags <- correlation_lags %>%
+  pivot_longer(
+    cols = matches("_(lag[1-5])_"),
+    names_to = c("climate_variable", "lag", ".value"),
+    names_pattern = "(.*)_(lag[1-6])_(.*)"
+  ) %>%
+  filter(!is.na(correlation)) %>%
+  mutate(stars = p_to_stars(p_value))
+
+# Add this short line below:
+cor_long_lags <- cor_long_lags %>%
+  mutate(stars = ifelse(stars == "", "none", stars))
+
+```
+
+```{r}
+#correlation heatmaps with district facets
+cor_long_lags_heat <- cor_long_lags %>%
+  mutate(stars = ifelse(stars == "none", "", stars))
+
+ggplot(cor_long_lags_heat,
+       aes(x = lag, y = climate_variable, fill = correlation)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = stars), color = "black", size = 4, fontface = "bold") +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red",
+    midpoint = 0,
+    limits = c(-1, 1),
+    name = "Correlation"
+  ) +
+  facet_wrap(~ district, ncol = 4) +
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "Lagged Climate–Malaria Correlation Matrices by District (1–5 Month Lags)",
+    x = "Lag (months)",
+    y = "Climate Variable"
+  ) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(size = 10),
+    axis.text.y = element_text(size = 10),
+    strip.text = element_text(face = "bold")
+  )
+
+```
+
+```{r}
+#plotting lagged values per year
+lagged_df <- lagged_df %>%
+  mutate(year = year(date))
+
+#getting correlatioms per year
+correlation_lags_year <- lagged_df %>%
+  group_by(district, year) %>%
+  summarise(
+    across(
+      all_of(climate_lag_vars),
+      ~ list(cor_test_safe(incidence, .x)),
+      .names = "{.col}"
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(across(all_of(climate_lag_vars), ~ map_dfr(.x, ~.x))) %>%
+  unnest(cols = everything(), names_sep = "_")
+
+#reshaping to long format
+cor_long_lags_year <- correlation_lags_year %>%
+  pivot_longer(
+    cols = matches("_(lag[1-5])_"),
+    names_to = c("climate_variable", "lag", ".value"),
+    names_pattern = "(.*)_(lag[1-5])_(.*)"
+  ) %>%
+  filter(!is.na(correlation)) %>%
+  mutate(
+    stars = p_to_stars(p_value),
+    stars = ifelse(stars == "none", "", stars),
+    lag = factor(lag, levels = paste0("lag", 1:5))
+  )
+```
+
+```{r}
+#plotting facets per year
+ggplot(cor_long_lags_year,
+       aes(x = lag, y = climate_variable, fill = correlation)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = stars), color = "black", size = 3, fontface = "bold") +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red",
+    midpoint = 0,
+    limits = c(-1, 1),
+    name = "Correlation"
+  ) +
+  facet_grid(year ~ district) +  # rows = year, columns = district
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "Lagged Climate–Malaria Correlation Matrices by District and Year",
+    x = "Lag (months)",
+    y = "Climate Variable"
+  ) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(size = 8),
+    axis.text.y = element_text(size = 10),
+    strip.text = element_text(face = "bold")
+  )
+```
+
+```{r}
+
+# PLOT: Lagged Climate–Malaria Correlations by District and Year
+ggplot(cor_long_lags_year,
+            aes(x = lag, y = climate_variable, fill = correlation)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = stars), color = "black", size = 3, fontface = "bold") +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red",
+    midpoint = 0,
+    limits = c(-1, 1),
+    name = "Correlation"
+  ) +
+  
+  # ---- FIX SQUASHING ----
+  facet_wrap(~ year + district, ncol = 6, scales = "free") +
+  
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "Lagged Climate–Malaria Correlation Matrices by District and Year",
+    x = "Lag (months)",
+    y = "Climate Variable"
+  ) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(size = 8),
+    axis.text.y = element_text(size = 10),
+    strip.text = element_text(face = "bold", size = 10),
+    plot.title = element_text(face = "bold", size = 14)
+  )
+
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```

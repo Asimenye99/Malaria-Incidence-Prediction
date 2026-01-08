@@ -1,0 +1,15 @@
+# Mac
+.DS_Store
+
+# R
+.RData
+.Rhistory
+
+# Quarto / R Markdown
+*_files/
+rsconnect/
+
+# Optional: rendered HTML if you don’t want it tracked
+# *.html
+
+
