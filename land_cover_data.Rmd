@@ -1,0 +1,154 @@
+---
+title: "Land Cover Malawi"
+author: "Victor & Doreen"
+date: "2026-01-19"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Packages
+
+```{r}
+#install.packages("terra")
+#install.packages("geodata")
+library(dplyr)
+library(ggplot2)
+library(viridis)
+library(terra)
+library(geodata)
+library(sf)
+```
+
+Downloading Land Cover data from WorldCover using geodata package
+
+```{r}
+
+# names of the land cover types
+vars <- c(
+  "trees", "grassland", "shrubs", "cropland",
+  "built", "bare",
+  "wetland"
+)
+
+lc_list <- list() # empty list
+
+# Download each dataset based on the list
+for (v in vars) {
+  lc_list[[v]] <- geodata::landcover(
+    var  = v,
+    path = "data/"
+  )
+}
+
+```
+
+Crop and mask the WorldCover data to Malawi region
+
+```{r}
+# Crop the dataset based on Malawi shapfile
+mwi <- geodata::gadm(country = "MWI", level = 0, path = "data/")
+
+lc_mwi <- lapply(lc_list, function(r) {
+  terra::mask(terra::crop(r, mwi), mwi)
+})
+
+```
+
+Stack the rasters and plot 
+
+```{r}
+lc_stack <- rast(lc_mwi)
+plot(lc_stack)
+```
+Get Malawi Districts shapefiles and set CRS
+
+```{r}
+#Geolocating points in the climate data and linking it to distrits for merging with the malaria data
+
+# Load Malawi districts shapefile
+
+districts <- st_read("mwi_adm_nso_hotosm_20230405_shp/mwi_admbnda_adm2_nso_hotosm_20230405.shp")
+
+# Transform to same CRS as your climate points
+districts <- st_transform(districts, crs = 4326)  # WGS84
+
+```
+
+Plot Malawi map with district labels
+
+```{r}
+districts_sf <- st_as_sf(districts)
+
+# Plot
+ggplot() +
+  geom_sf(data = districts_sf, fill = NA, color = "black") +
+  geom_sf_text(data = districts_sf, aes(label = ADM2_EN), size = 2, color = "blue") +
+  theme_minimal() +
+  labs(title = "Malawi Districts", caption = "Source: Malawi shapefile")
+
+```
+
+
+```{r}
+
+# Get mean fraction of land cover of each District for analysis
+# Later we may get more data
+
+districts_vect <- vect(districts) # making sure it is a spatial vector
+districts_vect <- project(districts_vect, crs(lc_stack))
+
+lc_by_district <- terra::extract(
+  lc_stack,
+  districts_vect,
+  fun = mean,
+  na.rm = TRUE
+)
+
+# Prepare the mean land cover fraction dataset for analysis 
+lc_by_district$District <- districts_vect$ADM2_EN
+lc_df <- lc_by_district[, c("District", vars)]
+
+head(lc_df)
+```
+Plot maps of mean land cover fraction by each District for easier visualization
+
+```{r}
+
+
+# Join lc_df (mean land cover) to districts_sf
+districts_sf <- districts_sf %>%
+  left_join(lc_df, by = c("ADM2_EN" = "District"))
+
+# Plot maps in a loop
+vars <- c(
+  "trees", "grassland", "shrubs", "cropland",
+  "built", "bare",
+  "wetland"
+)
+
+plot_list <- list()
+
+for (v in vars) {
+  
+  p <- ggplot(districts_sf) +
+    geom_sf(aes_string(fill = v), color = "black") +
+    scale_fill_viridis_c(option = "plasma", name = paste("%", v)) +
+    theme_minimal() +
+    labs(
+      title = paste("Mean", v, "fraction by District in Malawi"),
+      caption = "Source: ESA WorldCover"
+    )
+  
+  plot_list[[v]] <- p
+  print(p)
+  
+  # save each map
+  # ggsave(filename = paste0(v, "_malawi_map.png"), plot = p, width = 8, height = 6)
+}
+
+```
