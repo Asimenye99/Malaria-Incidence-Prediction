@@ -1,0 +1,115 @@
+---
+title: "ERA5 Climate data for Malawi"
+author: "Victor & Doreen"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This document converts ERA5 NetCDF's into time series for Malawi.
+
+We should create one time series for each District for further analysis.
+
+```{r}
+
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(parallel)
+library(ncdf4)
+library(MMWRweek)
+library(geodata)
+library(terra)
+```
+
+We can use the code bellow to compute monthly temperature and rainfall for each district.
+
+```{r}
+
+# Country boundary (level 0)
+mwi <- geodata::gadm(country = "MWI", level = 0, path = "../data/")
+plot(mwi) 
+```
+# Loading the NetCDF datasets that we downloaded in Python.
+
+```{r}
+temp <- rast('ERA5_temperature_data_malawi_2017_2024.nc')  # Temperature
+precip <- rast('ERA5_precipitation_data_malawi_2017_2024.nc')  # Humidity
+```
+
+# Just to take a look at the dataset we will plot mean temperature (kelvin) and mean precipitation (meters), and include Malawi shapefile. 
+
+```{r}
+# Compute the mean over the time dimension
+# temperature is in Kelvin
+# We may need to transform to Celcius
+# but Kelvin is better to avoid negative values
+temp_mean <- mean(temp, na.rm = TRUE)  
+
+# Compute the mean over the time dimension
+# precipitation is in meters (m)
+# need to rescale to millimeter (mm) later
+precip_mean <- mean(precip, na.rm = TRUE)  
+# Plot
+plot(temp_mean)
+plot(mwi, add = TRUE, lwd = 2)
+
+plot(precip_mean)
+plot(mwi, add = TRUE, lwd = 2)
+```
+
+Here is a function to transform the NetCDF data into time series.
+
+1: It take a NetCDF file 
+2: Mask its values based on a shapefile 
+3; Compute the mean of the values for each date
+4: transform and save as a dataframe.
+5: Note that we need to define the variable name (var_name="xxx") 
+6: in the case bellow it is temperature or precipitation
+6: "var_name" may also be the name of each district, or something else that helps in the further analysis
+
+```{r}
+
+ERA5_monthly_data <- function(my_netcdf, malawi_shapefile, var_name = "variable") {
+  # Mask NetCDF to Malawi
+  malawi_masked <- mask(my_netcdf, malawi_shapefile)
+  # Extract time dimension (months)
+  dates <- time(malawi_masked)
+  # Calculate mean over spatial cells for each month
+  monthly_mean <- global(malawi_masked, mean, na.rm = TRUE)
+  # Convert to data frame (keep only the first column)
+  monthly_df <- data.frame(
+    value = monthly_mean[[1]],
+    date  = as.Date(dates)
+  )
+  # Rename the main value column
+  colnames(monthly_df)[1] <- var_name
+  return(monthly_df)
+}
+
+```
+
+Here is a example for Malawi.
+
+This one computes mean precipitation for the whole country.
+
+```{r}
+# note that we choose var_name
+malawi_monthly_precip <- ERA5_monthly_data(precip, mwi, var_name = "precipitation")
+head(malawi_monthly_precip)
+
+```
+This one computes mean monthly temperature for the whole country.
+
+```{r}
+# note that we choose var_name
+malawi_monthly_temperature <- ERA5_monthly_data(precip, mwi, var_name = "temperature")
+head(malawi_monthly_temperature)
+
+```
+Now we need to this, or something similar, for each District and organize the datasets in way that we can use in further analysis.
+
