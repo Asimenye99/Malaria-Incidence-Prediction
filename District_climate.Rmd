@@ -1,0 +1,119 @@
+---
+title: "ERA5 Climate data for Malawi"
+author: "Victor & Doreen"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+output:
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+This document converts ERA5 NetCDF's into time series for Malawi.
+
+We should create one time series for each District for further analysis.
+
+```{r}
+
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(parallel)
+library(ncdf4)
+library(MMWRweek)
+library(geodata)
+library(terra)
+```
+
+We can use the code bellow to compute monthly temperature and rainfall for each district.
+
+```{r}
+
+#district level data
+# Load Malawi districts (level 1)
+mwi_districts <- geodata::gadm(country = "MWI", level = 1, path = "../data/")
+
+# Check the column names
+names(mwi_districts)
+
+# Usually NAME_1 contains district names
+plot(mwi_districts, main = "Malawi Districts (Level 1)")
+
+
+
+
+```
+# Loading the NetCDF datasets that we downloaded in Python.
+
+```{r}
+temp <- rast('ERA5_temperature_malawi_2015_2024.nc')  # Temperature
+precip <- rast('ERA5_precipitation_malawi_2015_2024.nc')#Precipitation
+wind <- rast('ERA5_wind_malawi_2015_2024.nc')
+```
+
+# Function to compute district level monthly mean
+
+```{r}
+# Function to extract district monthly means
+ERA5_district_monthly <- function(nc_rast, districts, var_name = "variable") {
+  
+  results_list <- list()
+  
+  for (i in 1:nrow(districts)) {
+    district_name <- districts$NAME_1[i]
+    district_poly <- districts[i, ]
+    
+    masked_raster <- terra::mask(nc_rast, district_poly)
+    
+    dates <- as.Date(time(nc_rast))
+    monthly_mean <- terra::global(masked_raster, fun = mean, na.rm = TRUE)
+    
+    df <- data.frame(
+      district = district_name,
+      date     = dates,
+      value    = as.numeric(monthly_mean[[1]])
+    )
+    
+    results_list[[i]] <- df
+  }
+  
+  final_df <- do.call(rbind, results_list)
+  colnames(final_df)[3] <- var_name
+  return(final_df)
+}
+
+
+```
+
+#computing district level monthly temperature
+
+```{r}
+
+district_monthly_temp   <- ERA5_district_monthly(temp, mwi_districts, var_name = "temperature")
+district_monthly_precip <- ERA5_district_monthly(precip, mwi_districts, var_name = "precipitation")
+district_monthly_wind    <- ERA5_district_monthly(wind, mwi_districts, var_name = "wind")
+
+
+```
+```{r}
+head(district_monthly_temp)
+head(district_monthly_precip)
+head(district_monthly_wind)
+
+```
+```{r}
+combined_df <- district_monthly_temp %>%
+  left_join(district_monthly_precip, by = c("district", "date")) %>%
+  left_join(district_monthly_wind, by = c("district", "date"))
+
+head(combined_df)
+
+```
+
+```{r}
+write.csv(combined_df, "Malawi_district_climate_2015_2024.csv", row.names = FALSE)
+
+```
+
+
