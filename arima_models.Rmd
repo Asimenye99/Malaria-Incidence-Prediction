@@ -547,6 +547,10 @@ ggplot() +
 
 ```
 
-4*4
+training_arimas(dataset, forecast horizions, covariate = NULL)
 
+output (trained arimas)
 
+Forecast_arimas(dataset, forecast horizions, covariate = NULL)
+
+forecasted results(Get a dataset with - mean,forecasts, upper, lower, target date)
