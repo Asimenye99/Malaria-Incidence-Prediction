@@ -1,0 +1,552 @@
+---
+title: 'Arima models'
+author: "Nicholas S. Adam & Victor Felix"
+date: "`r Sys.Date()`"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+```{r}
+#Installing packages if they are not installed in R
+
+#install.packages("tidyverse") #for data wrangling
+#install.packages("data.table") #easy working with tables
+#install.packages("corrr") #for correlation analysis
+#install.packages("corrr") #for plots
+
+#call the packages for use via library 
+library(tidyverse)
+library(ggplot2)
+library(lubridate) #dealing with dates
+library(broom)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(scales)
+library(patchwork)
+library(tseries)
+library(lme4)
+library(forecast)
+library(kableExtra)
+```
+
+## Loading data in markdom
+
+Load malaria incidence and NSO population data and call it incidence data
+```{r incident data}
+incidence_data <- read_csv("malaria.csv")
+pop_dat <- read_csv("MR DATA - District Populations.csv")
+head(incidence_data)
+head(pop_dat)
+```
+Population data is messy and needs cleaning! Thus exactly what the code below does. After cleaning, I merge it to the incidence data and calculate incidence per one thousand population.
+```{r}
+pop_tot <- pop_dat %>% 
+# Our interest is in the second column with "Age Groups"  and then "Total" for total population size
+rename(AgeGroup = 2) %>% 
+# keep only the rows where AgeGroup == "Total" 
+  filter(AgeGroup == "Total") %>% 
+# drop non-district rows 
+filter(!is.na(District))
+
+# Rename the repeating triplets: 2018_both, 2018_male, 2018_female
+yrs <- 2018:2024
+nm <- names(pop_tot)
+
+# positions where the header is exactly a year (e.g., "2018","2019",...)
+year_pos <- which(nm %in% as.character(yrs))
+
+# defensively rename the triplets for each year by looping through
+for (y in yrs) {
+  i <- which(nm == as.character(y))
+  if (length(i) == 1) {
+    # i     -> both
+    # i + 1 -> male
+    # i + 2 -> female
+    nm[i]     <- paste0(y, "_both")
+    if (i + 1 <= length(nm)) nm[i + 1] <- paste0(y, "_male")
+    if (i + 2 <= length(nm)) nm[i + 2] <- paste0(y, "_female")
+  }
+}
+names(pop_tot) <- nm
+
+# Select just the columns for 2018-2024 triplets plus District 
+wanted <- c("District",
+            as.vector(rbind(paste0(yrs, "_both"),
+                            paste0(yrs, "_male"),
+                            paste0(yrs, "_female"))))
+wanted <- intersect(wanted, names(pop_tot))  # in case some are missing
+
+pop_long <- pop_tot %>%
+  select(all_of(wanted)) %>%
+  pivot_longer(
+    cols = -District,
+    names_to = c("Year", "Sex"),
+    names_sep = "_",
+    values_to = "Population"
+  ) %>%
+  mutate(
+    Year = as.integer(Year),
+    Sex  = factor(Sex, levels = c("both", "male", "female"),
+                  labels = c("Both", "Male", "Female")),
+    # numbers are like "234,712" -> parse to numeric
+    Population = parse_number(Population)
+  ) %>%
+  arrange(District, Year, Sex)
+
+# Tidy long table: District, Year and Sex 
+pop_long_2018_2024 <- pop_long %>% filter(Year %in% 2018:2024)
+
+# Normalize district names (merge City/Rural; fix known typo)
+pop_both_combined <- pop_long_2018_2024 %>%
+  mutate(
+    District_clean = str_replace(District, "\\s+(City|Rural)$", ""),  #drop trailing " City"/" Rural"
+    District_clean = str_squish(District_clean),
+    District_clean = case_when(
+      District_clean == "Chiradzulo" ~ "Chiradzulu",  # fix typo if present
+      TRUE ~ District_clean
+    )
+  ) %>%
+  filter(Sex == "Both") %>%                     # keep both sexes
+  group_by(District_clean, Year) %>%
+  summarise(Population = sum(Population, na.rm = TRUE), .groups = "drop") %>%
+  arrange(District_clean, Year)
+
+pop_both_combined<- pop_both_combined %>% 
+  mutate(District_clean = District_clean %>%
+      stringr::str_replace_all("[^[:alnum:] ]", "") %>%  #remove non-alphanumeric
+      stringr::str_squish())
+
+incidence_data <- incidence_data %>%
+  mutate(
+    District = District %>%
+      stringr::str_replace_all("[^[:alnum:] ]", "") %>%  # remove non-alphanumeric
+      stringr::str_squish()
+  ) %>% 
+  mutate(District = ifelse(District == "Nkhata", "Nkhatabay", District))
+
+#join with incidence data to get rates per 1000 individuals
+incidence_dat <- incidence_data %>% 
+  left_join(pop_both_combined, by = c("District" = "District_clean", "Year" = "Year")) %>%
+  #calculate incidence per 1,000 population
+  mutate(incidence_per_1k = Incidence / (Population / 1000))
+
+
+```
+##Forecasting using ARIMA
+
+ARIMA (Autoregressive Integrated Moving Average) models are widely used for time series forecasting due to their flexibility and effectiveness in capturing linear temporal patterns in data across fields like finance, health, and engineering etc.
+
+ Background of ARIMA Models
+
+ARIMA models combine three key components:
+- **Autoregressive (AR):** Captures the relationship between an observation and its previous values (lags).
+- **Integrated (I):** Applies differencing to the data to achieve stationarity, removing trends or seasonality.
+- **Moving Average (MA):** Models the relationship between an observation and past forecast errors.
+
+The model is typically denoted as ARIMA(p, d, q), where:
+- **p:** Number of autoregressive terms,
+- **d:** Number of differences needed for stationarity,
+- **q:** Number of moving average terms .
+
+Fitting ARIMA Models
+
+Fitting an ARIMA model involves several steps, often guided by the Box-Jenkins methodology:
+1. **Visualize and Preprocess Data:** Plot the time series to identify trends, seasonality, and outliers. Apply transformations if variance is unstable.
+2. **Stationarity Check:** Use differencing to remove trends and make the series stationary if needed.
+3. **Model Identification:** Use autocorrelation (ACF) and partial autocorrelation (PACF) plots to select appropriate p and q values.
+4. **Parameter Estimation:** Estimate model parameters using statistical software, often optimizing information criteria like AIC or BIC.
+5. **Model Validation:** Check residuals for randomness and absence of autocorrelation to ensure a good fit.
+6. **Forecasting:** Use the fitted model to predict future values
+
+ Interpreting ARIMA Forecasts
+
+- **Point Forecasts:** Provide expected future values based on past patterns.
+- **Prediction Intervals:** Quantify uncertainty around forecasts.
+- **Model Diagnostics:** Residual analysis helps assess forecast reliability; non-random residuals may indicate model inadequacy.
+- **Limitations:** ARIMA assumes linearity and may not capture complex nonlinear relationships or sudden structural changes.
+
+Most of the analysis here will use the in-built functions for time series analysis found in `forecast` package. The forecast package automatically detects the p,d, and q for time series data. We will use the standardized incidence per 1000 population for easy comparisions at district levels 
+
+```{r}
+# Ensure month order and sort chronologically
+incidence_dat <- incidence_dat %>%
+  mutate(Month = match(Month, month.name)) %>%
+  arrange(Year, Month)
+
+```
+
+Prepare the data, check for trends, seasonality, and outliers, select p,d,q using ACF or PACF to build time series analysis
+```{r}
+#Prep: build a proper monthly Date and complete missing months
+inc_monthly_nat <- incidence_dat %>%
+  mutate(
+    # If Month is a name like "January", convert to number
+    MonthNum = if (is.numeric(Month)) Month else match(Month, month.name),
+    Date = make_date(Year, MonthNum, 1)
+  ) %>%
+  group_by(Date) %>%
+  summarise(incidence_per_1k = sum(incidence_per_1k, na.rm = TRUE), .groups = "drop") %>%
+  # Make sure every month from min..max exists
+  complete(Date = seq(min(Date), max(Date), by = "month"),
+           fill = list(incidence_per_1k = 0)) %>%
+  arrange(Date)
+
+# Convert to ts object (monthly frequency = 12)
+ts_nat <- ts(inc_monthly_nat$incidence_per_1k,
+             start = c(year(min(inc_monthly_nat$Date)),
+                       month(min(inc_monthly_nat$Date))),
+             frequency = 12)
+
+# Visualize a national time series line plot
+ggplot(inc_monthly_nat, aes(Date, incidence_per_1k)) +
+  geom_line(color = "steelblue", linewidth = 0.9) +
+  labs(title = "Monthly Malaria Incidence (National)",
+       x = NULL, y = "Incidence") +
+  theme_minimal(base_size = 13)
+
+# There is obvious seasoanlilty in the national plot. Lets do Seasonal diagnostics 
+# (a) Seasonal subseries: each month gets its own horizontal line & dots by year
+ggsubseriesplot(ts_nat) +
+  ggtitle("Seasonal Subseries Plot (National)") +
+  ylab("Incidence per 1k population")
+
+# (b) Season plot: each year's seasonal curve overlaid
+ggseasonplot(ts_nat, year.labels = TRUE, continuous = TRUE) +
+  ggtitle("Season Plot by Year (National)") +
+  ylab("Incidence per 1k population") + xlab("Month")
+
+# STL decomposition (trend / seasonality / remainder) 
+# STL prefers no zeros for log—so use raw series unless you want log transform
+fit_stl <- stl(ts_nat, s.window = "periodic")
+autoplot(fit_stl) + ggtitle("STL Decomposition (National)")
+
+# ACF (Autocorrelation Function): Measures the correlation between a time series and its own past values at different lags. It shows how current values relate to previous values over various time intervals
+# PACF (Partial Autocorrelation Function): Measures the correlation between a time series and its lagged values, controlling for the values at all shorter lags. It isolates the direct effect of a lag, removing the influence of intermediate lag
+#ACF & PACF (helps choose ARIMA orders) 
+ggAcf(ts_nat)  + ggtitle("ACF: National Incidence")
+ggPacf(ts_nat) + ggtitle("PACF: National Incidence")
+
+# Outlier detection & cleaning 
+# Identify outliers
+outs <- tsoutliers(ts_nat)
+outs  # prints indices, types, and replacement suggestions
+
+# Plot with outliers highlighted
+idx <- outs$index
+inc_monthly_nat %>%
+  mutate(IsOutlier = seq_along(incidence_per_1k) %in% idx) %>%
+  ggplot(aes(Date, incidence_per_1k)) +
+  geom_line(color = "grey50") +
+  geom_point(aes(color = IsOutlier), size = 2) +
+  scale_color_manual(values = c("FALSE" = "steelblue", "TRUE" = "red")) +
+  labs(title = "Detected Outliers (National)", x = NULL, y = "Incidence per 1k population", color = "Outlier") +
+  theme_minimal(base_size = 13)
+
+# For modelling, you may want a cleaned series
+ts_nat_clean <- tsclean(ts_nat)
+autoplot(cbind(Original = ts_nat, Cleaned = ts_nat_clean)) +
+  ggtitle("Original vs Cleaned Series (National)") + xlab("Time")
+
+# --------------District-level quick looks ----------
+# Faceted time series by district (free y-axis)
+inc_monthly_dist <- incidence_dat %>%
+  mutate(MonthNum = if (is.numeric(Month)) Month else match(Month, month.name),
+         Date = make_date(Year, MonthNum, 1)) %>%
+  group_by(District, Date) %>%
+  summarise(incidence_per_1k = sum(incidence_per_1k, na.rm = TRUE), .groups = "drop") %>%
+  arrange(District, Date)
+
+ggplot(inc_monthly_dist, aes(Date, incidence_per_1k)) +
+  geom_line(color = "steelblue", linewidth = 0.6) +
+  facet_wrap(~ District, scales = "free_y") +
+  labs(title = "Monthly Malaria Incidence per 1k population by District",
+       x = NULL, y = "Incidence per 1000 population") +
+  theme_minimal(base_size = 11)
+
+# Season plot by some selected district with high incidence
+shortlist <- c("Mwanza", "Neno", "Salima", "Nkhatabay", "Mchinji")  # change as needed
+for (d in shortlist) {
+  df_d <- inc_monthly_dist %>% filter(District == d)
+  ts_d <- ts(df_d$incidence_per_1k, start = c(year(min(df_d$Date)),
+                                       month(min(df_d$Date))),
+             frequency = 12)
+  print(ggseasonplot(ts_d, year.labels = TRUE, continuous = TRUE) +
+          ggtitle(paste("Season Plot:", d)) + ylab("Incidence per 1k population") + xlab("Month"))
+}
+
+```
+Time series parameter estimation
+```{r}
+#variance stabilisation
+lambda_nat <- BoxCox.lambda(ts_nat)
+# Suggested differences
+d_nat  <- ndiffs(BoxCox(ts_nat, lambda_nat))  # non-seasonal differencing
+D_nat  <- nsdiffs(BoxCox(ts_nat, lambda_nat)) # seasonal differencing (12)
+
+# AUTO: searches p,q,P,Q given d,D and seasonality
+fit_nat <- auto.arima(
+  ts_nat,
+  seasonal   = TRUE,
+  d          = d_nat,
+  D          = D_nat,
+  lambda     = lambda_nat,  # Box-Cox transform estimated above
+  stepwise   = FALSE,
+  approximation = FALSE,
+  method     = "ML"         # maximum likelihood
+)
+
+fit_nat
+
+# Coefficients & standard errors
+coef_nat <- coef(fit_nat)
+se_nat   <- sqrt(diag(vcov(fit_nat)))
+
+# 95% CIs
+ci_nat   <- confint(fit_nat)  # Wald CIs for parameters
+
+# Collect into a tidy table
+param_table_nat <- data.frame(
+  Parameter = names(coef_nat),
+  Estimate  = as.numeric(coef_nat),
+  SE        = as.numeric(se_nat),
+  `2.5%`    = ci_nat[,1],
+  `97.5%`   = ci_nat[,2],
+  row.names = NULL
+)
+
+param_table_nat
+
+# Model fit metrics
+list(
+  order     = arimaorder(fit_nat),
+  sigma2    = fit_nat$sigma2,
+  logLik    = as.numeric(logLik(fit_nat)),
+  AIC       = AIC(fit_nat),
+  BIC       = BIC(fit_nat),
+  lambda    = lambda_nat
+)
+
+# Residual checks (plots + Ljung-Box) and must pass before trusting parameters
+checkresiduals(fit_nat)  # ACF of residuals, LB test, normality plot
+
+```
+
+### National-Level Seasonal Forecasts
+```{r fig.width= 8}
+# Plot national forecast
+fc_nat <- forecast(fit_nat, h = 36)
+autoplot(fc_nat) + labs(
+    y = "Malaria incidence (National Per 1k Population)", x = "Year"
+  ) + theme_minimal(base_size = 13)+ ggtitle("National ARIMA Forecast (24 months)")
+```
+
+### District-level Seasonal Forecasts
+ 
+Create a function that computes a 2 year ahead forecasts for each district and all the required diagnostics, fit the model for each district and extract parameter values, and do forecast
+```{r cache=TRUE}
+
+# Build district monthly ts
+inc_monthly_dist <- incidence_dat %>%
+  mutate(MonthNum = if (is.numeric(Month)) Month else match(Month, month.name),
+         Date = make_date(Year, MonthNum, 1)) %>%
+  group_by(District, Date) %>%
+  summarise(incidence_per_1k = sum(incidence_per_1k, na.rm = TRUE), .groups = "drop") %>%
+  arrange(District, Date)
+
+fit_one_district <- function(df) {
+  # make regular monthly index
+  all_dates <- seq(min(df$Date), max(df$Date), by = "month")
+  df2 <- right_join(df, tibble(Date = all_dates), by = "Date") %>%
+    arrange(Date) %>%
+    mutate(incidence_per_1k = replace_na(incidence_per_1k, 0))
+
+  ts_d <- ts(df2$incidence_per_1k,
+             start = c(year(min(df2$Date)), month(min(df2$Date))),
+             frequency = 12)
+
+  # Box-Cox + differencing suggestions
+  lam <- tryCatch(BoxCox.lambda(ts_d), error = function(e) NA_real_)
+  dd  <- ndiffs(if (is.na(lam)) ts_d else BoxCox(ts_d, lam))
+  DD  <- nsdiffs(if (is.na(lam)) ts_d else BoxCox(ts_d, lam))
+
+  fit <- tryCatch(
+    auto.arima(ts_d,
+               seasonal = TRUE, d = dd, D = DD,
+               lambda = lam, stepwise = FALSE, approximation = FALSE, method = "ML"),
+    error = function(e) NULL
+  )
+  if (is.null(fit)) return(NULL)
+
+  # coefficients table
+  se  <- sqrt(diag(vcov(fit)))
+  ci  <- confint(fit)
+  tibble(
+    District = df$District[1],
+    Parameter = names(coef(fit)),
+    Estimate  = as.numeric(coef(fit)),
+    SE        = as.numeric(se),
+    CI_low    = ci[,1],
+    CI_high   = ci[,2],
+    sigma2    = fit$sigma2,
+     BIC       = BIC(fit),
+    lambda    = lam,
+    p = arimaorder(fit)["p"],
+    d = arimaorder(fit)["d"],
+    q = arimaorder(fit)["q"],
+    P = arimaorder(fit)["P"],
+    D = arimaorder(fit)["D"],
+    Q = arimaorder(fit)["Q"]
+  )
+}
+#put the parameters in a dataframe
+param_by_dist <- inc_monthly_dist %>%
+  group_by(District) %>%
+  group_split() %>%
+  map_dfr(~ fit_one_district(.x))
+
+#Get one row per district with orders + lambda
+model_specs <- param_by_dist %>%
+  distinct(District, p, d, q, P, D, Q, lambda)
+
+#Get my monthly data per district
+inc_monthly_dist <- incidence_dat %>%
+  # Clean Month and convert to numeric
+  mutate(
+    Month = str_squish(as.character(Month)),
+    MonthNum = case_when(
+      Month %in% month.name ~ match(Month, month.name),   # "January"
+      Month %in% month.abb  ~ match(Month, month.abb),    # "Jan"
+      TRUE ~ suppressWarnings(as.numeric(Month))          # already numeric like 1, 2, ...
+    ),
+    Date = make_date(Year, MonthNum, 1)
+  ) %>%
+  # Keep only rows where we successfully built a date
+  filter(!is.na(Date)) %>%
+  group_by(District, Date) %>%
+  summarise(
+    incidence_per_1k = sum(incidence_per_1k, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(District, Date)
+
+```
+Now, its time to make forecasts for one district. Plot for just one district 
+```{r}
+
+## 1. Choose a district that you can change at any point
+district_name <- "Mwanza"
+
+## 2. Extract that district's time series
+df_d <- inc_monthly_dist %>%
+  filter(District == district_name) %>%
+  arrange(Date)
+
+head(df_d)
+
+## 3. Get ARIMA orders + lambda from model_specs
+spec_d <- model_specs %>%
+  filter(District == district_name)
+
+p      <- spec_d$p
+d      <- spec_d$d
+q      <- spec_d$q
+P      <- spec_d$P
+D      <- spec_d$D
+Q      <- spec_d$Q
+lambda <- spec_d$lambda
+if (is.na(lambda)) lambda <- NULL   # let Arima ignore it if NA
+
+## 4. Build ts object
+ts_d <- ts(
+  df_d$incidence_per_1k,
+  start     = c(year(min(df_d$Date)), month(min(df_d$Date))),
+  frequency = 12
+)
+
+## 5. Fit ARIMA model
+fit_d <- Arima(
+  ts_d,
+  order    = c(p, d, q),
+  seasonal = list(order = c(P, D, Q), period = 12),
+  lambda   = lambda,
+  method   = "ML"
+)
+
+summary(fit_d)
+
+## 6. Forecast next 24 months
+h <- 36
+fc_d <- forecast(fit_d, h = h)  # by default gives 80% and 95%
+
+# Build future dates
+last_date    <- max(df_d$Date)
+future_dates <- seq(last_date %m+% months(1), by = "month", length.out = h)
+
+# Put forecast into a tibble with 80% & 95% CI
+fc_tbl <- tibble(
+  District = district_name,
+  Date     = future_dates,
+  point    = as.numeric(fc_d$mean),
+  lo80     = as.numeric(fc_d$lower[, "80%"]),
+  hi80     = as.numeric(fc_d$upper[, "80%"]),
+  lo95     = as.numeric(fc_d$lower[, "95%"]),
+  hi95     = as.numeric(fc_d$upper[, "95%"])
+)
+
+## Historical data for plotting
+hist_tbl <- df_d %>%
+  select(District, Date, incidence_per_1k) %>%
+  rename(value = incidence_per_1k) %>%
+  mutate(type = "Observed")
+
+## Forecast data for plotting
+fc_plot_tbl <- fc_tbl %>%
+  rename(value = point) %>%
+  mutate(type = "Forecast")
+
+## Combine for line layers
+plot_df <- bind_rows(hist_tbl, fc_plot_tbl)
+
+ggplot() +
+  # 95% CI band
+  geom_ribbon(
+    data = fc_tbl,
+    aes(x = Date, ymin = lo95, ymax = hi95),
+    fill = "lightblue",
+    alpha = 0.25
+  ) +
+  # 80% CI band (inside 95%)
+  geom_ribbon(
+    data = fc_tbl,
+    aes(x = Date, ymin = lo80, ymax = hi80),
+    fill = "steelblue",
+    alpha = 0.35
+  ) +
+  # Observed + forecast lines
+  geom_line(
+    data = plot_df,
+    aes(x = Date, y = value, color = type),
+    linewidth = 0.9
+  ) +
+  scale_color_manual(values = c("Observed" = "black", "Forecast" = "darkblue")) +
+  labs(
+    title = paste("Observed and 24-Month ARIMA Forecast:", district_name),
+    x = "Date",
+    y = "Incidence per 1,000 population",
+    color = ""
+  ) +
+  theme_minimal()
+
+
+
+```
+
+4*4
+
+
