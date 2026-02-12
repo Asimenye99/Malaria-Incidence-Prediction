@@ -112,6 +112,31 @@ head(combined_df)
 ```
 
 ```{r}
+ggplot(combined_df, aes(x = date, y = temperature, color = district, group = district)) +
+  geom_line() +
+  labs(title = "Temperature by District",
+       x = "Date",
+       y = "Temperature") +
+  theme_minimal()
+
+
+ggplot(combined_df, aes(x = date, y = precipitation, color = district, group = district)) +
+  geom_line() +
+  labs(title = "Temperature by District",
+       x = "Date",
+       y = "Temperature") +
+  theme_minimal()
+
+ggplot(combined_df, aes(x = date, y = wind, color = district, group = district)) +
+  geom_line() +
+  labs(title = "Temperature by District",
+       x = "Date",
+       y = "Temperature") +
+  theme_minimal()
+```
+
+
+```{r}
 write.csv(combined_df, "Malawi_district_climate_2015_2024.csv", row.names = FALSE)
 
 ```
