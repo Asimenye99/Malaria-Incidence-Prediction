@@ -37,8 +37,8 @@ plot(mwi)
 # Loading the NetCDF datasets that we downloaded in Python.
 
 ```{r}
-temp <- rast('ERA5_temperature_data_malawi_2017_2024.nc')  # Temperature
-precip <- rast('ERA5_precipitation_data_malawi_2017_2024.nc')  # Humidity
+temp <- rast('ERA5_temperature_malawi_2015_2024.nc')  # Temperature
+precip <- rast('ERA5_precipitation_malawi_2015_2024.nc')  # Humidity
 ```
 
 # Just to take a look at the dataset we will plot mean temperature (kelvin) and mean precipitation (meters), and include Malawi shapefile. 
