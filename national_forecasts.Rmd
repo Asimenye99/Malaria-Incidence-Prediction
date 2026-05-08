@@ -10,6 +10,37 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
+```{r}
+
+          m <- fc$mean[n_weeks_ahead]  ## mean forecast value 
+          s <- ((fc$upper[n_weeks_ahead]-fc$lower[n_weeks_ahead])/2.576/2)  # 99% confidence interval
+          n<-ceiling(model_weights_*1e6) # number of simulations based on the weights
+          new.sims <- rnorm(n, m=m, sd=s) # simulate values for each weighted model in as a gaussian
+          sims <- c(sims, new.sims) # combine simulated values for each model
+          
+          #####################################
+          # calculate the ensemble prediction #
+          predicted_value <- model_weights_*m + predicted_value ### m = mean forecast for 99% confidence
+          
+          ###########################
+          # if predicted value is NA 
+          if(is.na(predicted_value)){
+            print("predicted_value is na")
+          }
+        }
+      }
+       
+        # get the prediction dataset
+        single_prediction<- data.frame("predicted_date"= predicted_date, "Prediction" = predicted_value)# get the forecast for that date
+        #rbind all forecasts and dates
+        prediction_df<-rbind(prediction_df, single_prediction) 
+        # Define the 23 quantiles
+        probabilities <- c(0.01, 0.025, seq(0.05, 0.95, by = 0.05), 0.975, 0.99) 
+        # get 23 predictive quantiles based on the mixture of gaussians 
+        my_quantiles <- quantile(sims, probs=probabilities)
+
+```
+
 
 ```{r}
 #Installing packages if they are not installed in R
@@ -422,6 +453,113 @@ forecast_each_model <- function(model_list, h = 4, future_xreg_list = NULL) {
 
 forecast_list <- forecast_each_model(rolling_incidence, h = 4)
 ```
+
+Get quantiles for each forecast
+
+```{r}
+
+probabilities <- c(
+  0.01, 0.025,
+  seq(0.05, 0.95, by = 0.05),
+  0.975, 0.99
+)
+
+get_forecast_quantiles <- function(forecast_list) {
+
+  probabilities <- c(
+    0.01, 0.025,
+    seq(0.05, 0.95, by = 0.05),
+    0.975, 0.99
+  )
+
+  lapply(forecast_list, function(fc) {
+
+    if (is.null(fc)) return(NULL)
+
+    # Recover SE from the 95% interval
+    se <- (fc$upper[, "95%"] - fc$mean) / qnorm(0.975)
+
+    qmat <- sapply(probabilities, function(p) {
+      qnorm(
+        p,
+        mean = fc$mean,
+        sd = se
+      )
+    })
+
+    colnames(qmat) <- probabilities
+    rownames(qmat) <- paste0("h", seq_along(fc$mean))
+
+    qmat
+  })
+}
+
+
+quantile_list <- get_forecast_quantiles(forecast_list)
+
+```
+
+
+
+```{r}
+library(tidyverse)
+
+# Convert matrix to dataframe
+qdf <- as.data.frame(quantile_list[[10]])
+
+qdf$horizon <- 1:nrow(qdf)
+
+# Plot
+ggplot(qdf, aes(x = horizon)) +
+
+  # 95% interval
+  geom_ribbon(
+    aes(
+      ymin = `0.025`,
+      ymax = `0.975`
+    ),
+    alpha = 0.2
+  ) +
+
+  # 80% interval
+  geom_ribbon(
+    aes(
+      ymin = `0.1`,
+      ymax = `0.9`
+    ),
+    alpha = 0.3
+  ) +
+
+  # 50% interval
+  geom_ribbon(
+    aes(
+      ymin = `0.25`,
+      ymax = `0.75`
+    ),
+    alpha = 0.4
+  ) +
+
+  # Median
+  geom_line(
+    aes(y = `0.5`),
+    linewidth = 1
+  ) +
+
+  geom_point(
+    aes(y = `0.5`),
+    size = 2
+  ) +
+
+  theme_minimal() +
+
+  labs(
+    x = "Forecast horizon",
+    y = "Predicted incidence",
+    title = "ARIMA predictive quantiles"
+  )
+
+```
+
 
 ```{r}
 
