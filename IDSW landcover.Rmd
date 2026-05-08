@@ -1,0 +1,648 @@
+---
+title: "Land Cover Malawi"
+author: "Nicholas & Victor"
+date: "2026-04-25"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Packages
+
+```{r}
+#install.packages("terra")
+#install.packages("geodata")
+library(ggplot2)
+library(gganimate)
+library(gifski)
+library(av)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(viridis)
+library(terra)
+library(geodata)
+library(sf)
+library(tidyverse)
+```
+
+Downloading Land Cover data from WorldCover using geodata package
+
+```{r}
+
+# names of the land cover types
+vars <- c(
+  "trees", "grassland", "shrubs", "cropland",
+  "built", "bare",
+  "wetland"
+)
+
+lc_list <- list() # empty list
+
+# Download each dataset based on the list
+for (v in vars) {
+  lc_list[[v]] <- geodata::landcover(
+    var  = v,
+    path = "data/"
+  )
+}
+
+```
+
+Crop and mask the WorldCover data to Malawi region
+
+```{r}
+# Crop the dataset based on Malawi shapfile
+mwi <- geodata::gadm(country = "MWI", level = 0, path = "data/")
+
+lc_mwi <- lapply(lc_list, function(r) {
+  terra::mask(terra::crop(r, mwi), mwi)
+})
+
+```
+
+Stack the rasters and plot 
+
+```{r}
+lc_stack <- rast(lc_mwi)
+plot(lc_stack)
+```
+Get Malawi Districts shapefiles and set CRS
+
+```{r}
+#Geolocating points in the climate data and linking it to distrits for merging with the malaria data
+
+# Load Malawi districts shapefile
+
+districts <- st_read("mwi_adm_nso_hotosm_20230405_shp/mwi_admbnda_adm2_nso_hotosm_20230405.shp")
+
+# Transform to same CRS as your climate points
+districts <- st_transform(districts, crs = 4326)  # WGS84
+
+```
+
+Plot Malawi map with district labels
+
+```{r}
+districts_sf <- st_as_sf(districts)
+
+# Plot
+ggplot() +
+  geom_sf(data = districts_sf, fill = NA, color = "black") +
+  geom_sf_text(data = districts_sf, aes(label = ADM2_EN), size = 2, color = "blue") +
+  theme_minimal() +
+  labs(title = "Malawi Districts", caption = "Source: Malawi shapefile")
+
+```
+
+
+```{r}
+
+# Get mean fraction of land cover of each District for analysis
+# Later we may get more data
+
+districts_vect <- vect(districts) # making sure it is a spatial vector
+districts_vect <- project(districts_vect, crs(lc_stack))
+
+lc_by_district <- terra::extract(
+  lc_stack,
+  districts_vect,
+  fun = mean,
+  na.rm = TRUE
+)
+
+# Prepare the mean land cover fraction dataset for analysis 
+lc_by_district$District <- districts_vect$ADM2_EN
+lc_df <- lc_by_district[, c("District", vars)]
+
+head(lc_df)
+```
+Plot maps of mean land cover fraction by each District for easier visualization
+
+```{r}
+
+
+# Join lc_df (mean land cover) to districts_sf
+districts_sf <- districts_sf %>%
+  left_join(lc_df, by = c("ADM2_EN" = "District"))
+
+# Plot maps in a loop
+vars <- c(
+  "trees", "grassland", "shrubs", "cropland",
+  "built", "bare",
+  "wetland"
+)
+
+plot_list <- list()
+
+for (v in vars) {
+  
+  p <- ggplot(districts_sf) +
+    geom_sf(aes_string(fill = v), color = "black") +
+    scale_fill_viridis_c(option = "plasma", name = paste("%", v)) +
+    theme_minimal() +
+    labs(
+      title = paste("Mean", v, "fraction by District in Malawi"),
+      caption = "Source: ESA WorldCover"
+    )
+  
+  plot_list[[v]] <- p
+  print(p)
+  
+  # save each map
+  # ggsave(filename = paste0(v, "_malawi_map.png"), plot = p, width = 8, height = 6)
+}
+
+```
+
+
+
+```{r}
+
+# Filter Dowa district only
+dowa_sf <- districts_sf %>%
+  filter(ADM2_EN == "Dowa")
+
+# Convert to terra vector
+dowa_vect <- vect(dowa_sf)
+
+# Project Dowa polygon to match landcover raster CRS
+dowa_vect <- project(dowa_vect, crs(lc_stack))
+
+plot(dowa_vect)
+# Extract mean landcover values for Dowa only
+lc_dowa_mean <- terra::extract(
+  lc_stack,
+  dowa_vect,
+  fun = mean,
+  na.rm = TRUE
+)
+
+# Add district name
+lc_dowa_mean$District <- dowa_vect$ADM2_EN
+
+# Keep only useful columns
+lc_dowa_mean <- lc_dowa_mean[, c("District", vars)]
+
+lc_dowa_mean
+
+```
+
+Population Density data for Dowa at 1 km-square grid
+
+```{r}
+library(terra)
+library(sf)
+library(dplyr)
+library(geodata)
+
+
+# Download population density raster
+# res can be 0.5, 2.5, 5, or 10 minutes depending on what is available
+pop_density <- geodata::population(
+  year = 2020,
+  res  = 0.5,
+  path = "data/"
+)
+
+# Search for downloaded population raster files
+pop_files <- list.files(
+  "data/",
+  recursive = TRUE,
+  full.names = TRUE,
+  pattern = "\\.tif$"
+)
+
+pop_density <- rast(pop_files[8])
+
+terra::hasValues(pop_density)
+
+plot(pop_density, main = "Population density")
+
+```
+
+Extract for Dowa
+```{r}
+
+# Project Dowa polygon to population raster CRS
+dowa_vect_pop <- project(dowa_vect, crs(pop_density))
+
+# Crop and mask population density raster to Dowa
+pop_density_dowa <- pop_density %>%
+  terra::crop(dowa_vect_pop) %>%
+  terra::mask(dowa_vect_pop)
+
+names(pop_density_dowa) <- "pop_density_per_km2"
+
+plot(pop_density_dowa, main = "Population density in Dowa")
+plot(dowa_vect_pop, add = TRUE, border = "red", lwd = 2)
+```
+
+Extract mean population density for Dowa
+```{r}
+mean_pop_density_dowa <- terra::extract(
+  pop_density_dowa,
+  dowa_vect,
+  fun = mean,
+  na.rm = TRUE
+)
+
+mean_pop_density_dowa$District <- "Dowa"
+
+mean_pop_density_dowa
+```
+Join population density to land-cover points
+
+```{r}
+mean_pop_density_dowa <- mean_pop_density_dowa %>%
+  select(District, pop_density_per_km2)
+
+dowa_average_lc_pop <- lc_dowa_mean %>%
+  left_join(mean_pop_density_dowa, by = "District")
+
+dowa_average_lc_pop
+```
+
+Malaria data for Dowa for each Month since 2018
+```{r}
+incidence_data <- read_csv("malaria.csv") %>% 
+  filter(District =="Dowa") %>% 
+  group_by(Month, Year) %>%
+  summarise(Incidence = sum(Incidence, na.rm = TRUE), .groups = "drop") %>% 
+  mutate( Month = factor(Month, levels = month.name, ordered = TRUE) ) %>%
+  arrange(Year, Month)
+
+ggplot(incidence_data, aes(x = Month, y = Incidence, group = Year, color = factor(Year))) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  labs(
+    x = "Month",
+    y = "Incidence",
+    color = "Year"
+  )
+```
+Create a detailed pointwise location for Dowa: Start from your Dowa land-cover points
+```{r}
+# Convert Dowa polygon to terra vector
+dowa_vect <- terra::vect(dowa_sf)
+
+# Match CRS with land-cover raster
+dowa_vect_lc <- terra::project(dowa_vect, terra::crs(lc_stack))
+
+# Crop and mask land cover to Dowa
+lc_dowa <- lc_stack %>%
+  terra::crop(dowa_vect_lc) %>%
+  terra::mask(dowa_vect_lc)
+
+# Convert raster cells to dataframe with coordinates
+lc_dowa_points <- as.data.frame(
+  lc_dowa,
+  xy = TRUE,
+  na.rm = TRUE
+) %>%
+  rename(
+    longitude = x,
+    latitude  = y
+  ) %>%
+  mutate(District = "Dowa") %>%
+  select(District, longitude, latitude, all_of(vars))
+```
+
+Now, create  Create dowa_lc_pop which is a file that extracts population density at each land-cover raster-cell coordinate.
+```{r}
+# Convert land-cover point dataframe to terra vector
+lc_dowa_pts_vect <- terra::vect(
+  lc_dowa_points,
+  geom = c("longitude", "latitude"),
+  crs  = terra::crs(lc_stack)
+)
+
+# Project land-cover points to population raster CRS
+lc_dowa_pts_vect_pop <- terra::project(
+  lc_dowa_pts_vect,
+  terra::crs(pop_density_dowa)
+)
+
+# Extract population density at each land-cover point
+pop_at_lc_points <- terra::extract(
+  pop_density_dowa,
+  lc_dowa_pts_vect_pop
+)
+
+# Create merged detailed dataset
+dowa_lc_pop <- lc_dowa_points %>%
+  mutate(
+    pop_density_per_km2 = pop_at_lc_points$pop_density_per_km2
+  )
+
+head(dowa_lc_pop)
+```
+
+Now, I use dowa_lc_pop as the sampling frame for the weighted malaria case allocation.
+
+Now, I define dominant land cover for each raster cell
+
+Because each raster cell may have fractions of trees, grassland, shrubs, cropland, built, bare, and wetland, I assign the dominant land-cover class as the one with the highest fraction.
+```{r}
+landcover_vars <- c(
+  "trees", "grassland", "shrubs", "cropland",
+  "built", "bare", "wetland"
+)
+
+dowa_sampling_frame <- dowa_lc_pop %>%
+  rowwise() %>%
+  mutate(
+    dominant_landcover = landcover_vars[
+      which.max(c_across(all_of(landcover_vars)))
+    ]
+  ) %>%
+  ungroup()
+
+## Check its distribution
+dowa_sampling_frame %>%
+  count(dominant_landcover) %>%
+  mutate(prop = n / sum(n))
+```
+
+I now create a population, urban, and land-cover weights where: 
+
+*pop_weight: gives higher probability to cells with higher population density.
+*urban_weight: gives extra probability to cells with more built-up land cover.
+*landcover_weight: gives extra probability to land-cover types that may be more relevant for malaria exposure.
+
+```{r}
+dowa_sampling_frame <- dowa_sampling_frame %>%
+  mutate(
+    # Avoid zero population weights
+    pop_density_clean = ifelse(
+      is.na(pop_density_per_km2),
+      0,
+      pop_density_per_km2
+    ),
+    
+    pop_weight = pop_density_clean + 1,
+    
+    # Urban/built-up weight
+    urban_weight = 1 + built,
+    
+    # Land-cover suitability weights based on Doreen's landcover against malaria incidence results
+    landcover_weight = case_when(
+      dominant_landcover == "cropland"  ~ 1.50,
+      dominant_landcover == "grassland" ~ 1.20,
+      dominant_landcover == "shrubs"    ~ 1.10,
+      dominant_landcover == "wetland"   ~ 1.00,
+      dominant_landcover == "built"     ~ 1.30,
+      dominant_landcover == "trees"     ~ 0.80,
+      dominant_landcover == "bare"      ~ 0.60,
+      TRUE                              ~ 1.00
+    )
+  )
+```
+
+I am now creating seasonal weights from the incidence pattern. This is a month-specific seasonal multiplier based on the average incidence across years.
+```{r}
+seasonal_weights <- incidence_data %>%
+  group_by(Month) %>%
+  summarise(
+    mean_incidence = mean(Incidence, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    seasonal_weight = mean_incidence / mean(mean_incidence, na.rm = TRUE)
+  )
+
+seasonal_weights
+```
+
+I then create 70/30 sampling structure by land cover.Here I define two “high-priority” land-cover classes, cropland and grassland to have 70% of cases and 30% from all other land-cover types.I then create a
+sampling function for one month, that takes one row of incidence data and returns sampled locations. The final sampling weight= population weight * urban/built weight * land-cover suitability weight * seasonal month weight
+```{r}
+sample_dowa_cases_one_month <- function(inc_row,
+                                        sampling_frame,
+                                        seasonal_weights,
+                                        priority_landcovers = c("cropland", "grassland"),
+                                        priority_share = 0.70,
+                                        other_share = 0.30,
+                                        seed = NULL) {
+  
+  if (!is.null(seed)) set.seed(seed)
+  
+  this_month <- inc_row$Month
+  this_year  <- inc_row$Year
+  n_cases    <- inc_row$Incidence
+  
+  # If no cases, return empty data frame
+  if (is.na(n_cases) || n_cases <= 0) {
+    return(data.frame())
+  }
+  
+  # Get seasonal weight for the month
+  sw <- seasonal_weights %>%
+    filter(Month == this_month) %>%
+    pull(seasonal_weight)
+  
+  if (length(sw) == 0 || is.na(sw)) sw <- 1
+  
+  # Add final sampling weights
+  sf <- sampling_frame %>%
+    mutate(
+      month = as.character(this_month),
+      year = this_year,
+      seasonal_weight = sw,
+      final_weight = pop_weight *
+        urban_weight *
+        landcover_weight *
+        seasonal_weight
+    )
+  
+  # Split into priority and non-priority land-cover cells
+  sf_priority <- sf %>%
+    filter(dominant_landcover %in% priority_landcovers)
+  
+  sf_other <- sf %>%
+    filter(!dominant_landcover %in% priority_landcovers)
+  
+  # Number of samples from each group
+  n_priority <- round(n_cases * priority_share)
+  n_other    <- n_cases - n_priority
+  
+  # Safety checks
+  if (nrow(sf_priority) == 0) {
+    sf_priority <- sf
+    n_priority <- n_cases
+    n_other <- 0
+  }
+  
+  if (nrow(sf_other) == 0) {
+    sf_other <- sf
+    n_other <- 0
+  }
+  
+  # Sample priority cells
+  sampled_priority <- sf_priority %>%
+    slice_sample(
+      n = n_priority,
+      replace = TRUE,
+      weight_by = final_weight
+    )
+  
+  # Sample other cells
+  sampled_other <- sf_other %>%
+    slice_sample(
+      n = n_other,
+      replace = TRUE,
+      weight_by = final_weight
+    )
+  
+  # Combine
+  sampled <- bind_rows(sampled_priority, sampled_other) %>%
+    mutate(
+      sampled_group = ifelse(
+        dominant_landcover %in% priority_landcovers,
+        "priority_landcover",
+        "other_landcover"
+      )
+    )
+  
+  sampled
+}
+```
+
+
+Now, run sampling for all months and years. Because my monthly incidence can be large, this may create many rows. For example, if Dowa has 50,000 cases in a month, the output will contain 50,000 sampled rows for that month.
+```{r}
+priority_landcovers <- c("cropland", "wetland")
+sampled_dowa_cases <- lapply(seq_len(nrow(incidence_data)), function(i) {
+  
+  sample_dowa_cases_one_month(
+    inc_row = incidence_data[i, ],
+    sampling_frame = dowa_sampling_frame,
+    seasonal_weights = seasonal_weights,
+    priority_landcovers = priority_landcovers,
+    priority_share = 0.70,
+    other_share = 0.30,
+    seed = 100 + i
+  )
+  
+}) %>%
+  bind_rows()
+```
+
+Check: has the weighting being done corectly 
+```{r}
+
+sampled_dowa_cases %>%
+  count(year, month, dominant_landcover)
+
+##Has 70/30 worked?
+sampled_dowa_cases %>%
+  count(year, month, sampled_group) %>%
+  group_by(year, month) %>%
+  mutate(prop = n / sum(n)) %>%
+  ungroup()
+```
+
+Now, I keeps only the number of sampled cases per raster cell which we will be using for modelling 
+```{r}
+sampled_dowa_cases_aggregated <- sampled_dowa_cases %>%
+  group_by(
+    year,
+    month,
+    District,
+    longitude,
+    latitude,
+    dominant_landcover
+  ) %>%
+  summarise(
+    sampled_cases = n(),
+    pop_density_per_km2 = first(pop_density_per_km2),
+    trees = first(trees),
+    grassland = first(grassland),
+    shrubs = first(shrubs),
+    cropland = first(cropland),
+    built = first(built),
+    bare = first(bare),
+    wetland = first(wetland),
+    .groups = "drop"
+  )
+
+head(sampled_dowa_cases_aggregated)
+```
+
+```{r}
+
+
+library(tidyverse)
+
+dir.create("monthly_maps", showWarnings = FALSE)
+
+sampled_dowa_cases_aggregated <- sampled_dowa_cases_aggregated %>%
+  mutate(
+    month = factor(month, levels = month.name),
+    year_month = paste(year, month, sep = "_")
+  )
+
+year_month_list <- sampled_dowa_cases_aggregated %>%
+  distinct(year, month, year_month) %>%
+  arrange(year, month)
+
+for(i in seq_len(nrow(year_month_list))) {
+  
+  y <- year_month_list$year[i]
+  m <- year_month_list$month[i]
+  
+  p <- sampled_dowa_cases_aggregated %>%
+    filter(year == y, month == m) %>%
+    ggplot(aes(x = longitude, y = latitude)) +
+    geom_point(
+      aes(color = sampled_cases),
+      size = 1,
+      alpha = 0.8
+    ) +
+    scale_color_gradientn(
+      colors = c("lightyellow", "orange", "red", "darkred"),
+      limits = c(0, 30),
+      oob = scales::squish
+    ) +
+    coord_equal() +
+    theme_minimal() +
+    labs(
+      title = paste("Sampled malaria cases -", m, y),
+      x = "Longitude",
+      y = "Latitude",
+      color = "Cases"
+    )
+  
+  ggsave(
+    filename = paste0("monthly_maps/map_", y, "_", m, ".jpg"),
+    plot = p,
+    width = 7,
+    height = 6,
+    dpi = 300
+  )
+}
+```
+
+
+# include more shapefiles form Malawi later: https://data.humdata.org/dataset/cod-ab-mwi
+
+```{r}
+library(magick)
+
+png_files <- sort(list.files(
+  "monthly_maps",
+  pattern = "\\.jpg$",
+  full.names = TRUE
+))
+
+imgs <- image_read(png_files)
+
+gif <- image_animate(imgs, fps = 2)
+
+image_write(gif, "monthly_malaria_cases.gif")
+```
