@@ -11,38 +11,6 @@ knitr::opts_chunk$set(echo = TRUE)
 
 
 ```{r}
-
-          m <- fc$mean[n_weeks_ahead]  ## mean forecast value 
-          s <- ((fc$upper[n_weeks_ahead]-fc$lower[n_weeks_ahead])/2.576/2)  # 99% confidence interval
-          n<-ceiling(model_weights_*1e6) # number of simulations based on the weights
-          new.sims <- rnorm(n, m=m, sd=s) # simulate values for each weighted model in as a gaussian
-          sims <- c(sims, new.sims) # combine simulated values for each model
-          
-          #####################################
-          # calculate the ensemble prediction #
-          predicted_value <- model_weights_*m + predicted_value ### m = mean forecast for 99% confidence
-          
-          ###########################
-          # if predicted value is NA 
-          if(is.na(predicted_value)){
-            print("predicted_value is na")
-          }
-        }
-      }
-       
-        # get the prediction dataset
-        single_prediction<- data.frame("predicted_date"= predicted_date, "Prediction" = predicted_value)# get the forecast for that date
-        #rbind all forecasts and dates
-        prediction_df<-rbind(prediction_df, single_prediction) 
-        # Define the 23 quantiles
-        probabilities <- c(0.01, 0.025, seq(0.05, 0.95, by = 0.05), 0.975, 0.99) 
-        # get 23 predictive quantiles based on the mixture of gaussians 
-        my_quantiles <- quantile(sims, probs=probabilities)
-
-```
-
-
-```{r}
 #Installing packages if they are not installed in R
 
 #install.packages("tidyverse") #for data wrangling
@@ -50,7 +18,9 @@ knitr::opts_chunk$set(echo = TRUE)
 #install.packages("corrr") #for correlation analysis
 #install.packages("corrr") #for plots
 
-#call the packages for use via library 
+#call the packages for use via library
+library(forecast)
+library(ggplot2)
 library(zoo)
 library(tidyverse)
 library(ggplot2)
@@ -317,62 +287,9 @@ Now we will start to build some SARIMA and SARAIMAX models.
 "ts_nat" is the national timeseries of Malaria incidence
 Let's try to come up with some models and model evaluation approaches for this data. Later we will do something similar to each district.
 
-```{r}
-fit_one_district <- function(df) {
-  all_dates <- seq(min(df$Date), max(df$Date), by = "month")
-  df2 <- right_join(df, tibble(Date = all_dates), by = "Date") %>%
-    arrange(Date) %>%
-    mutate(incidence_per_1k = replace_na(incidence_per_1k, 0))
 
-  ts_d <- ts(
-    df2$incidence_per_1k,
-    start = c(year(min(df2$Date)), month(min(df2$Date))),
-    frequency = 12
-  )
 
-  xreg_mat <- NULL
 
-  fit <- tryCatch(
-    auto.arima(
-      ts_d,
-      seasonal = TRUE,
-      stepwise = FALSE,
-      approximation = FALSE
-    ),
-    error = function(e) NULL
-  )
-
-  if (is.null(fit)) return(NULL)
-
-  se <- sqrt(diag(vcov(fit)))
-  ci <- confint(fit)
-
-  coef_table <- tibble(
-    District = df$District[1],
-    Parameter = names(coef(fit)),
-    Estimate  = as.numeric(coef(fit)),
-    SE        = as.numeric(se),
-    CI_low    = ci[, 1],
-    CI_high   = ci[, 2],
-    sigma2    = fit$sigma2,
-    BIC       = BIC(fit),
-    p = arimaorder(fit)["p"],
-    d = arimaorder(fit)["d"],
-    q = arimaorder(fit)["q"],
-    P = arimaorder(fit)["P"],
-    D = arimaorder(fit)["D"],
-    Q = arimaorder(fit)["Q"]
-  )
-
-  list(
-    model = fit,
-    coefficients = coef_table,
-    data = df2,
-    ts = ts_d,
-    xreg = xreg_mat
-  )
-}
-```
 
 We need to make the National data in a format that we can use to fit the model.
 
@@ -390,66 +307,20 @@ What we will fit the model based on a window of 60 months. This is basically the
 
 ```{r}
 
-rolling_incidence <- list()
+source("aux_functions.R")
 
-for (i in 1:23) {
-  incidence_window <- national_incidence[(1 + i):(60 + i), ]
-  rolling_incidence[[i]] <- fit_one_district(incidence_window)
-  print(i)
-}
+baseline_models <- rolling_baseline(national_incidence, n_windows = 23)
+
+sarima_models <- rolling_sarima(national_incidence, n_windows = 23)
 
 # version with 1 or more exogenous variables
-
-#fit_arimax <- fit_one_district(
-#  national_incidence,
-#  xreg_cols = c("rainfall", "temperature")
-#)
-
 ```
 
 ### National-Level Seasonal Forecasts
 
 ```{r}
 # Plot national forecast
-library(forecast)
-library(ggplot2)
 
-forecast_each_model <- function(model_list, h = 4, future_xreg_list = NULL) {
-  fc_list <- vector("list", length(model_list))
-
-  for (i in seq_along(model_list)) {
-    obj <- model_list[[i]]
-
-    if (is.null(obj)) {
-      fc_list[[i]] <- NULL
-      next
-    }
-
-    fc_list[[i]] <- tryCatch({
-      # No exogenous variables: plain ARIMA
-      if (is.null(obj$xreg)) {
-        forecast(obj$model, h = h)
-      } else {
-        # ARIMAX: need future xreg values
-        if (is.null(future_xreg_list) || is.null(future_xreg_list[[i]])) {
-          stop("Missing future xreg values")
-        }
-
-        forecast(
-          obj$model,
-          xreg = as.matrix(future_xreg_list[[i]]),
-          h = h
-        )
-      }
-    }, error = function(e) {
-      message("Forecast failed for model ", i, ": ", e$message)
-      NULL
-    })
-  }
-
-  names(fc_list) <- paste0("window_", seq_along(model_list))
-  fc_list
-}
 
 forecast_list <- forecast_each_model(rolling_incidence, h = 4)
 ```
