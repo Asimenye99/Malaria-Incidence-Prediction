@@ -10,6 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
+
 ```{r}
 #Installing packages if they are not installed in R
 
@@ -18,9 +19,7 @@ knitr::opts_chunk$set(echo = TRUE)
 #install.packages("corrr") #for correlation analysis
 #install.packages("corrr") #for plots
 
-#call the packages for use via library
-library(forecast)
-library(ggplot2)
+#call the packages for use via library 
 library(zoo)
 library(tidyverse)
 library(ggplot2)
@@ -35,8 +34,6 @@ library(tseries)
 library(lme4)
 library(forecast)
 library(kableExtra)
-
-source("aux_functions.R")
 ```
 
 ## Loading data in markdom
@@ -285,14 +282,6 @@ for (d in shortlist) {
 }
 
 ```
-Now we will start to build some SARIMA and SARAIMAX models. 
-"ts_nat" is the national timeseries of Malaria incidence
-Let's try to come up with some models and model evaluation approaches for this data. Later we will do something similar to each district.
-
-
-
-
-
 We need to make the National data in a format that we can use to fit the model.
 
 ```{r}
@@ -303,176 +292,137 @@ national_incidence <- data.frame(
   District = "National"
 )
 
-temperature_data <- read_csv("ERA5_climate_data/malawi_monthly_temperature.csv")
-
-temperature_data <- temperature_data %>%
-  rename(Date = date)
-
-
-# Add temperature to the national_incidence data as a column
-national_incidence <- national_incidence %>%
-  left_join(temperature_data, by = "Date")
 ```
 
-What we will fit the model based on a window of 60 months. This is basically the data up to 2022. These are the models that we will use to forecast later.
+We also need climate data with some lags. 
+
+Maybe I should create a dataframe with temperature and dates.
+Then I would get the same dates as the Malaria data.
+Then I would need a rolling window to select the data from previous months.
 
 ```{r}
-baseline_models <- rolling_baseline(national_incidence, n_windows = 23)
-```
 
-```{r}
-sarima_models <- rolling_sarima(national_incidence, n_windows = 23)
-```
+temperature <- read.csv("ERA5_climate_data/malawi_monthly_temperature.csv")
 
-```{r}
-sarimax_models <- rolling_sarima(
-  national_incidence,
-  n_windows = 23,
-  SARIMAX = TRUE,
-  xreg_col = "temperature"
+temperature_df <- data.frame(
+  Date = as.Date(temperature$date),
+  temp_no_lag = as.numeric(temperature$temperature),
+  District = "National"
 )
+
+head(temperature_df)
 ```
-
-
-!
-!
-!
-!
-! I need to create a function with xreg values for the sarimax
-! I need to setup the quantiles in a way that I can run WIS
-!
-!
-!
-
-### National-Level Seasonal Forecasts
+Let's combine here both dataframes by date
+I want to use the climate data on the ARIMAX model later
 
 ```{r}
-# Plot national forecast
-SARIMA_forecasts <- forecast_SARIMAs(sarima_models, h = 4)
+national_incidence_temp <- national_incidence %>%
+  left_join(
+    temperature_df,
+    by = c("Date", "District")
+  )
 
-# Plot national forecast
-BASELINE_forecasts <- forecast_baselines(baseline_models, h = 4)
-
-# Plot national forecast
-#SARIMAX_forecasts <- forecast_baselines(sarimax_models, h = 4)
+head(national_incidence_temp)
 ```
 
-Get quantiles for each forecast
+Now we will start to build some SARIMA and SARAIMAX models. 
+"ts_nat" is the national timeseries of Malaria incidence
+Let's try to come up with some models and model evaluation approaches for this data. Later we will do something similar to each district.
 
 ```{r}
-# Get quantiles
-SARIMA_quantiles <- get_forecasted_quantiles(SARIMA_forecasts)
-
-# Get quantiles
-BASELINE_quantiles <- get_forecasted_quantiles(satimax_models_forecasts)
-
-```
-
-
-```{r}
-# Convert matrix to dataframe
-qdf <- as.data.frame(SARIMA_quantiles[[2]])
-
-qdf$horizon <- 1:nrow(qdf)
-
-# Plot
-ggplot(qdf, aes(x = horizon)) +
-
-  # 95% interval
-  geom_ribbon(
-    aes(
-      ymin = `0.025`,
-      ymax = `0.975`
+fit_one_district <- function(df, xreg_cols = NULL) {
+  
+  all_dates <- seq(min(df$Date), max(df$Date), by = "month")
+  
+  df2 <- right_join(df, tibble(Date = all_dates), by = "Date") %>%
+    arrange(Date) %>%
+    mutate(
+      incidence_per_1k = replace_na(incidence_per_1k, 0)
+    )
+  
+  # Handle covariates dynamically
+  if (!is.null(xreg_cols)) {
+    df2 <- df2 %>%
+      mutate(across(all_of(xreg_cols),
+                    ~ replace_na(.x, mean(.x, na.rm = TRUE))))
+    
+    xreg_mat <- as.matrix(df2[, xreg_cols])
+  } else {
+    xreg_mat <- NULL
+  }
+  
+  ts_d <- ts(
+    df2$incidence_per_1k,
+    start = c(year(min(df2$Date)), month(min(df2$Date))),
+    frequency = 12
+  )
+  
+  fit <- tryCatch(
+    auto.arima(
+      ts_d,
+      xreg = xreg_mat,
+      seasonal = TRUE,
+      stepwise = FALSE,
+      approximation = FALSE
     ),
-    alpha = 0.2
-  ) +
+    error = function(e) NULL
+  )
+  
+  if (is.null(fit)) return(NULL)
+  
+  se <- sqrt(diag(vcov(fit)))
+  ci <- confint(fit)
+  
+  coef_table <- tibble(
+    District = df$District[1],
+    Parameter = names(coef(fit)),
+    Estimate  = as.numeric(coef(fit)),
+    SE        = as.numeric(se),
+    CI_low    = ci[, 1],
+    CI_high   = ci[, 2],
+    sigma2    = fit$sigma2,
+    BIC       = BIC(fit),
+    p = arimaorder(fit)["p"],
+    d = arimaorder(fit)["d"],
+    q = arimaorder(fit)["q"],
+    P = arimaorder(fit)["P"],
+    D = arimaorder(fit)["D"],
+    Q = arimaorder(fit)["Q"]
+  )
+  
+  list(
+    model = fit,
+    coefficients = coef_table,
+    data = df2,
+    ts = ts_d,
+    xreg = xreg_mat,
+    xreg_cols = xreg_cols
+  )
+}
 
-  # 80% interval
-  geom_ribbon(
-    aes(
-      ymin = `0.1`,
-      ymax = `0.9`
-    ),
-    alpha = 0.3
-  ) +
+fit_nat <- fit_one_district(
+  national_incidence_temp[1:60,],
+  xreg_cols = "temp_no_lag"
+)
 
-  # 50% interval
-  geom_ribbon(
-    aes(
-      ymin = `0.25`,
-      ymax = `0.75`
-    ),
-    alpha = 0.4
-  ) +
+future_temp <- national_incidence_temp$temp_no_lag[61:64]
+future_xreg <- matrix(future_temp, nrow = 4)
+colnames(future_xreg) <- fit_nat$xreg_cols
+fc <- forecast(fit_nat$model, h = 4, xreg = future_xreg)
+fc
 
-  # Median
-  geom_line(
-    aes(y = `0.5`),
-    linewidth = 1
-  ) +
 
-  geom_point(
-    aes(y = `0.5`),
-    size = 2
-  ) +
 
-  theme_minimal() +
 
+autoplot(fc) +
+  autolayer(fit_nat$ts, series = "Observed") +
   labs(
-    x = "Forecast horizon",
-    y = "Predicted incidence",
-    title = "ARIMA predictive quantiles"
-  )
+    y = "Malaria incidence per 1k",
+    x = "Time",
+    title = "Observed + Forecast (with prediction intervals)"
+  ) +
+  theme_minimal()
 
 ```
 
 
-```{r}
-
-for (i in 1:23) {
-  print(
-    autoplot(forecast_list[[i]]) +
-      labs(y = "Malaria incidence per 1k", x = "Year") +
-      theme_minimal()
-  )
-}
-
-national_incidence
-```
-
-```{r}
-
-
-actual_incidence <- list()
-
-for (i in 1:23) {
-  incidence_window <- national_incidence[(61 + i):(64 + i), ]
-  actual_incidence [[i]] <- incidence_window
-  print(i)
-}
-
-
-for (i in 1:23) {
-  
-  fc <- forecast_list[[i]]
-  actual_df <- actual_incidence[[i]]
-  
-  # Extract forecast time index
-  fc_time <- time(fc$mean)
-  
-  # Build dataframe for plotting
-  actual_plot <- data.frame(
-    time = fc_time,
-    value = actual_df$incidence_per_1k
-  )
-  
-  print(
-    autoplot(fc) +
-      geom_point(data = actual_plot,
-                 aes(x = time, y = value),
-                 color = "red", size = 2) +
-      labs(y = "Malaria incidence per 1k", x = "Year") +
-      theme_minimal()
-  )
-}
-```

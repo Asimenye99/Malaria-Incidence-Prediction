@@ -37,8 +37,8 @@ plot(mwi)
 # Loading the NetCDF datasets that we downloaded in Python.
 
 ```{r}
-temp <- rast('ERA5_temperature_data_malawi_2017_2024.nc')  # Temperature
-precip <- rast('ERA5_precipitation_data_malawi_2017_2024.nc')  # Humidity
+temp <- rast('ERA5_temperature_malawi_2015_2024.nc')  # Temperature
+precip <- rast('ERA5_precipitation_malawi_2015_2024.nc')  # Humidity
 ```
 
 # Just to take a look at the dataset we will plot mean temperature (kelvin) and mean precipitation (meters), and include Malawi shapefile. 
@@ -102,14 +102,20 @@ This one computes mean precipitation for the whole country.
 malawi_monthly_precip <- ERA5_monthly_data(precip, mwi, var_name = "precipitation")
 head(malawi_monthly_precip)
 
+write.csv(malawi_monthly_precip,
+          "malawi_monthly_precipitation.csv",
+          row.names = FALSE)
 ```
 This one computes mean monthly temperature for the whole country.
 
 ```{r}
 # note that we choose var_name
-malawi_monthly_temperature <- ERA5_monthly_data(precip, mwi, var_name = "temperature")
+malawi_monthly_temperature <- ERA5_monthly_data(temp, mwi, var_name = "temperature")
 head(malawi_monthly_temperature)
 
+write.csv(malawi_monthly_temperature,
+          "malawi_monthly_temperature.csv",
+          row.names = FALSE)
 ```
 Now we need to this, or something similar, for each District and organize the datasets in way that we can use in further analysis.
 
