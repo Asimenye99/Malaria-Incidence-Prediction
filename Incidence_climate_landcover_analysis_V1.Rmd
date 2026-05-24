@@ -50,6 +50,7 @@ library(car)
 library(grid)
 library(terra)
 library(ggrepel)
+install.packages("openxlsx")
 ```
 
 ---
@@ -77,37 +78,133 @@ head(landcover_df)
 
 ## Malaria Incidence Data (DHIS2 / NMCP)
 
-```{r import-malaria}
-xls_files   <- list.files(pattern = "*.xls")
-malaria_raw <- xls_files %>% map_dfr(read_excel)
+```{r}
 
-glimpse(malaria_raw)
+
 ```
 
-## Population Rasters (WorldPop)
+```{r}
+
+
+
+```
+
+
+```{r import-malaria}
+
+```
+
+
+```{r}
+view(data_long)
+```
+
+
+## Population Data (NSO - Cleaning)
+
+```{r}
+#Loading Malaria and population data
+
+incidence_data <- read_csv("malaria.csv")
+pop_dat <- read_csv("MR DATA - District Populations.csv")
+head(incidence_data)
+head(pop_dat)
+```
+
 
 ```{r import-population}
-tif_files   <- list.files("population/", pattern = "\\.tif$", full.names = TRUE)
-pop_rasters <- lapply(tif_files, terra::rast)
-pop_years   <- gsub("[^0-9]", "", basename(tif_files)) |> as.numeric()
+pop_tot <- pop_dat %>% 
+# Our interest is in the second column with "Age Groups"  and then "Total" for total population size
+rename(AgeGroup = 2) %>% 
+# keep only the rows where AgeGroup == "Total" 
+  filter(AgeGroup == "Total") %>% 
+# drop non-district rows 
+filter(!is.na(District))
 
-districts <- terra::vect(
-  "mwi_adm_nso_hotosm_20230405_shp/mwi_admbnda_adm2_nso_hotosm_20230405.shp"
-)
-districts <- project(districts, pop_rasters[[1]])
+# Rename the repeating triplets: 2018_both, 2018_male, 2018_female
+yrs <- 2018:2024
+nm <- names(pop_tot)
 
-district_col <- "ADM2_EN"
+# positions where the header is exactly a year (e.g., "2018","2019",...)
+year_pos <- which(nm %in% as.character(yrs))
 
-district_pop_list <- lapply(seq_along(pop_rasters), function(i) {
-  vals <- terra::extract(pop_rasters[[i]], districts, fun = sum, na.rm = TRUE)
-  data.frame(
-    district   = districts[[district_col]],
-    year       = pop_years[i],
-    population = vals[, 2]
-  )
-})
+# defensively rename the triplets for each year by looping through
+for (y in yrs) {
+  i <- which(nm == as.character(y))
+  if (length(i) == 1) {
+    # i     -> both
+    # i + 1 -> male
+    # i + 2 -> female
+    nm[i]     <- paste0(y, "_both")
+    if (i + 1 <= length(nm)) nm[i + 1] <- paste0(y, "_male")
+    if (i + 2 <= length(nm)) nm[i + 2] <- paste0(y, "_female")
+  }
+}
+names(pop_tot) <- nm
 
-district_pop_all <- bind_rows(district_pop_list)
+# Select just the columns for 2018-2024 triplets plus District 
+wanted <- c("District",
+            as.vector(rbind(paste0(yrs, "_both"),
+                            paste0(yrs, "_male"),
+                            paste0(yrs, "_female"))))
+wanted <- intersect(wanted, names(pop_tot))  # in case some are missing
+
+pop_long <- pop_tot %>%
+  select(all_of(wanted)) %>%
+  pivot_longer(
+    cols = -District,
+    names_to = c("Year", "Sex"),
+    names_sep = "_",
+    values_to = "Population"
+  ) %>%
+  mutate(
+    Year = as.integer(Year),
+    Sex  = factor(Sex, levels = c("both", "male", "female"),
+                  labels = c("Both", "Male", "Female")),
+    # numbers are like "234,712" -> parse to numeric
+    Population = parse_number(Population)
+  ) %>%
+  arrange(District, Year, Sex)
+
+# Tidy long table: District, Year and Sex 
+pop_long_2018_2024 <- pop_long %>% filter(Year %in% 2018:2024)
+
+# Normalize district names (merge City/Rural; fix known typo)
+pop_both_combined <- pop_long_2018_2024 %>%
+  mutate(
+    District_clean = str_replace(District, "\\s+(City|Rural)$", ""),  #drop trailing " City"/" Rural"
+    District_clean = str_squish(District_clean),
+    District_clean = case_when(
+      District_clean == "Chiradzulo" ~ "Chiradzulu",  # fix typo if present
+      TRUE ~ District_clean
+    )
+  ) %>%
+  filter(Sex == "Both") %>%                     # keep both sexes
+  group_by(District_clean, Year) %>%
+  summarise(Population = sum(Population, na.rm = TRUE), .groups = "drop") %>%
+  arrange(District_clean, Year)
+
+pop_both_combined<- pop_both_combined %>% 
+  mutate(District_clean = District_clean %>%
+      stringr::str_replace_all("[^[:alnum:] ]", "") %>%  #remove non-alphanumeric
+      stringr::str_squish())
+
+incidence_data <- incidence_data %>%
+  mutate(
+    District = District %>%
+      stringr::str_replace_all("[^[:alnum:] ]", "") %>%  # remove non-alphanumeric
+      stringr::str_squish()
+  ) %>% 
+  mutate(District = ifelse(District == "Nkhata", "Nkhatabay", District))
+
+#join with incidence data to get rates per 1000 individuals
+incidence_dat <- incidence_data %>% 
+  left_join(pop_both_combined, by = c("District" = "District_clean", "Year" = "Year")) %>%
+  #calculate incidence per 1,000 population
+  mutate(incidence_per_1k = Incidence / (Population / 1000))
+
+
+district_pop_all <- 
 
 glimpse(district_pop_all)
 ```
