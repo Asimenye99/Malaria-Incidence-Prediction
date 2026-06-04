@@ -381,13 +381,13 @@ head(exog_3lag_df)
 
 ```{r}
 # Plot national forecast
-SARIMA_forecasts <- forecast_SARIMAs(sarima_models, h = 4)
+SARIMA_forecasts <- forecast_SARIMAs(sarima_models, h = 3)
 
 # Plot national forecast
-BASELINE_forecasts <- forecast_baselines(baseline_models, h = 4)
+BASELINE_forecasts <- forecast_baselines(baseline_models, h = 3)
 
 # Plot national forecast
-#SARIMAX_forecasts <- forecast_baselines(sarimax_models, h = 4)
+#SARIMAX_forecasts <- forecast_baselines(sarimax_models, h = 3)
 ```
 
 Get quantiles for each forecast
