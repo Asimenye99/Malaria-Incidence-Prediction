@@ -497,18 +497,6 @@ ggplot(qdf, aes(x = horizon)) +
 ```
 
 
-```{r}
-
-for (i in 1:23) {
-  print(
-    autoplot(forecast_list[[i]]) +
-      labs(y = "Malaria incidence per 1k", x = "Year") +
-      theme_minimal()
-  )
-}
-
-national_incidence
-```
 
 ```{r}
 
