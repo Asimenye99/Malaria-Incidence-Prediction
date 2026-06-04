@@ -333,12 +333,45 @@ sarimax_models <- rolling_sarima(
 )
 ```
 
-
-!
 !
 !
 !
 ! I need to create a function with xreg values for the sarimax
+
+```{r}
+
+# instead of temperature we need each climate predictor 
+
+
+for (i in 1:27){ 
+  
+  exog1 <- national_incidence$temperature[60 + i]
+  exog2 <- national_incidence$temperature[61 + i]
+  exog3 <- national_incidence$temperature[62 + i]
+
+  exog_1lag_df <- rbind(
+    exog_1lag_df,
+    data.frame(lag = "lag1", h1 = exog1, h2 = exog1, h3 = exog1)
+  )
+  
+  exog_2lag_df <- rbind(
+    exog_2lag_df,
+    data.frame(lag = "lag2", h1 = exog1, h2 = exog2, h3 = exog2)
+  )
+  
+  exog_3lag_df <- rbind(
+    exog_3lag_df,
+    data.frame(window = "lag3", h1 = exog1, h2 = exog2, h3 = exog3)
+  )
+}
+
+
+head(exog_3lag_df)
+
+```
+
+
+
 ! I need to setup the quantiles in a way that I can run WIS
 !
 !
