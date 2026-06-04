@@ -408,12 +408,28 @@ SARIMA_quantiles <- get_forecasted_quantiles(SARIMA_forecasts)
 BASELINE_quantiles <- get_forecasted_quantiles(BASELINE_forecasts)
 
 # Get quantiles
+SARIMAX_3_quantiles <- get_forecasted_quantiles(sarimax_forecasts_3lag)
+
+# Get quantiles
 SARIMAX_2_quantiles <- get_forecasted_quantiles(sarimax_forecasts_2lag)
 
 # Get quantiles
 SARIMAX_1_quantiles <- get_forecasted_quantiles(sarimax_forecasts_1lag)
 
 ```
+
+
+Organize the quantiles in a way we may calculate WIS and MAE
+
+```{r}
+
+
+
+
+
+```
+
+
 
 !
 ! Using temperature and rainfall, the baseline and the sarima
