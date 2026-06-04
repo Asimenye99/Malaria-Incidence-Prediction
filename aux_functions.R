@@ -150,9 +150,11 @@ fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
 
 # Forecasts SARIMA models
 forecast_SARIMAs <- function(model_list, h = 4, future_xreg_list = NULL) {
+  
   fc_list <- vector("list", length(model_list))
   
   for (i in seq_along(model_list)) {
+    
     obj <- model_list[[i]]
     
     if (is.null(obj)) {
@@ -161,21 +163,33 @@ forecast_SARIMAs <- function(model_list, h = 4, future_xreg_list = NULL) {
     }
     
     fc_list[[i]] <- tryCatch({
-      # No exogenous variables: plain ARIMA
+      
       if (is.null(obj$xreg)) {
+        
         forecast(obj$model, h = h)
+        
       } else {
-        # ARIMAX: need future xreg values
+        
         if (is.null(future_xreg_list) || is.null(future_xreg_list[[i]])) {
           stop("Missing future xreg values")
         }
         
+        future_xreg <- future_xreg_list[[i]]
+        
+        future_xreg <- matrix(
+          as.numeric(future_xreg),
+          ncol = ncol(obj$xreg)
+        )
+        
+        colnames(future_xreg) <- colnames(obj$xreg)
+        
         forecast(
           obj$model,
-          xreg = as.matrix(future_xreg_list[[i]]),
+          xreg = future_xreg,
           h = h
         )
       }
+      
     }, error = function(e) {
       message("Forecast failed for model ", i, ": ", e$message)
       NULL
@@ -183,8 +197,10 @@ forecast_SARIMAs <- function(model_list, h = 4, future_xreg_list = NULL) {
   }
   
   names(fc_list) <- paste0("window_", seq_along(model_list))
+  
   fc_list
 }
+
 
 # Rolling SARIMA
 rolling_sarima <- function(

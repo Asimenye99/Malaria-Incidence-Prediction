@@ -342,35 +342,51 @@ sarimax_models <- rolling_sarima(
 
 # instead of temperature we need each climate predictor 
 
+future_exog_1lag <- data.frame()
+future_exog_2lag <- data.frame()
+future_exog_3lag <- data.frame()
 
-for (i in 1:27){ 
+for (i in 1:23){ 
   
   exog1 <- national_incidence$temperature[60 + i]
   exog2 <- national_incidence$temperature[61 + i]
   exog3 <- national_incidence$temperature[62 + i]
 
-  exog_1lag_df <- rbind(
-    exog_1lag_df,
-    data.frame(lag = "lag1", h1 = exog1, h2 = exog1, h3 = exog1)
+  future_exog_1lag <- rbind(
+    future_exog_1lag,
+    data.frame(window = i, lag = "lag1", h1 = exog1, h2 = exog1, h3 = exog1)
   )
   
-  exog_2lag_df <- rbind(
-    exog_2lag_df,
-    data.frame(lag = "lag2", h1 = exog1, h2 = exog2, h3 = exog2)
+  future_exog_2lag <- rbind(
+    future_exog_2lag,
+    data.frame(window = i, lag = "lag2", h1 = exog1, h2 = exog2, h3 = exog2)
   )
   
-  exog_3lag_df <- rbind(
-    exog_3lag_df,
-    data.frame(window = "lag3", h1 = exog1, h2 = exog2, h3 = exog3)
+  future_exog_3lag <- rbind(
+    future_exog_3lag,
+    data.frame(window = i, lag = "lag3", h1 = exog1, h2 = exog2, h3 = exog3)
   )
 }
 
+head(future_exog_3lag)
 
-head(exog_3lag_df)
 
 ```
 
 
+```{r}
+future_xreg_list_3lag <- lapply(1:nrow(future_exog_3lag), function(i) {
+  future_exog_3lag[i, c("h1", "h2", "h3")]
+})
+
+future_xreg_list_2lag <- lapply(1:nrow(future_exog_2lag), function(i) {
+  future_exog_2lag[i, c("h1", "h2", "h3")]
+})
+
+future_xreg_list_1lag <- lapply(1:nrow(future_exog_1lag), function(i) {
+  future_exog_1lag[i, c("h1", "h2", "h3")]
+})
+```
 
 ! I need to setup the quantiles in a way that I can run WIS
 !
@@ -387,7 +403,17 @@ SARIMA_forecasts <- forecast_SARIMAs(sarima_models, h = 3)
 BASELINE_forecasts <- forecast_baselines(baseline_models, h = 3)
 
 # Plot national forecast
-#SARIMAX_forecasts <- forecast_baselines(sarimax_models, h = 3)
+sarimax_forecasts_3lag <- forecast_SARIMAs(
+  model_list = sarimax_models,
+  h = 3, future_xreg_list = future_xreg_list_3lag
+)
+
+# Plot national forecast
+sarimax_forecasts_1lag <- forecast_SARIMAs(
+  model_list = sarimax_models,
+  h = 3, future_xreg_list = future_xreg_list_1lag
+)
+
 ```
 
 Get quantiles for each forecast
@@ -397,14 +423,20 @@ Get quantiles for each forecast
 SARIMA_quantiles <- get_forecasted_quantiles(SARIMA_forecasts)
 
 # Get quantiles
-BASELINE_quantiles <- get_forecasted_quantiles(satimax_models_forecasts)
+BASELINE_quantiles <- get_forecasted_quantiles(BASELINE_forecasts)
+
+# Get quantiles
+SARIMAX_3_quantiles <- get_forecasted_quantiles(sarimax_forecasts_3lag)
+
+# Get quantiles
+SARIMAX_1_quantiles <- get_forecasted_quantiles(sarimax_forecasts_1lag)
 
 ```
 
 
 ```{r}
 # Convert matrix to dataframe
-qdf <- as.data.frame(SARIMA_quantiles[[2]])
+qdf <- as.data.frame(SARIMAX_1_quantiles[[2]])
 
 qdf$horizon <- 1:nrow(qdf)
 
@@ -413,42 +445,15 @@ ggplot(qdf, aes(x = horizon)) +
 
   # 95% interval
   geom_ribbon(
-    aes(
-      ymin = `0.025`,
-      ymax = `0.975`
-    ),
-    alpha = 0.2
-  ) +
-
+    aes( ymin = `0.025`,  ymax = `0.975`),  alpha = 0.2) +
   # 80% interval
   geom_ribbon(
-    aes(
-      ymin = `0.1`,
-      ymax = `0.9`
-    ),
-    alpha = 0.3
-  ) +
-
+    aes(ymin = `0.1`, ymax = `0.9`), alpha = 0.3) +
   # 50% interval
-  geom_ribbon(
-    aes(
-      ymin = `0.25`,
-      ymax = `0.75`
-    ),
-    alpha = 0.4
-  ) +
-
+  geom_ribbon(  aes( ymin = `0.25`, ymax = `0.75`), alpha = 0.4) +
   # Median
-  geom_line(
-    aes(y = `0.5`),
-    linewidth = 1
-  ) +
-
-  geom_point(
-    aes(y = `0.5`),
-    size = 2
-  ) +
-
+  geom_line(  aes(y = `0.5`),  linewidth = 1) +
+  geom_point( aes(y = `0.5`),size = 2) +
   theme_minimal() +
 
   labs(
@@ -457,6 +462,32 @@ ggplot(qdf, aes(x = horizon)) +
     title = "ARIMA predictive quantiles"
   )
 
+# Convert matrix to dataframe
+qdf <- as.data.frame(SARIMAX_3_quantiles[[2]])
+
+qdf$horizon <- 1:nrow(qdf)
+
+# Plot
+ggplot(qdf, aes(x = horizon)) +
+
+  # 95% interval
+  geom_ribbon(
+    aes( ymin = `0.025`,  ymax = `0.975`),  alpha = 0.2) +
+  # 80% interval
+  geom_ribbon(
+    aes(ymin = `0.1`, ymax = `0.9`), alpha = 0.3) +
+  # 50% interval
+  geom_ribbon(  aes( ymin = `0.25`, ymax = `0.75`), alpha = 0.4) +
+  # Median
+  geom_line(  aes(y = `0.5`),  linewidth = 1) +
+  geom_point( aes(y = `0.5`),size = 2) +
+  theme_minimal() +
+
+  labs(
+    x = "Forecast horizon",
+    y = "Predicted incidence",
+    title = "ARIMA predictive quantiles"
+  )
 ```
 
 
