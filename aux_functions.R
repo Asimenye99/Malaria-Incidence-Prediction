@@ -1,3 +1,57 @@
+
+create_future_exog <- function(data, variable, n_windows = 23, train_length = 60) {
+  
+  future_exog_1lag <- data.frame()
+  future_exog_2lag <- data.frame()
+  future_exog_3lag <- data.frame()
+  
+  for (i in 1:n_windows) {
+    
+    exog1 <- data[[variable]][train_length + i]
+    exog2 <- data[[variable]][train_length + i + 1]
+    exog3 <- data[[variable]][train_length + i + 2]
+    
+    future_exog_1lag <- rbind(
+      future_exog_1lag,
+      data.frame(
+        window = i,
+        lag = "lag1",
+        h1 = exog1,
+        h2 = exog1,
+        h3 = exog1
+      )
+    )
+    
+    future_exog_2lag <- rbind(
+      future_exog_2lag,
+      data.frame(
+        window = i,
+        lag = "lag2",
+        h1 = exog1,
+        h2 = exog2,
+        h3 = exog2
+      )
+    )
+    
+    future_exog_3lag <- rbind(
+      future_exog_3lag,
+      data.frame(
+        window = i,
+        lag = "lag3",
+        h1 = exog1,
+        h2 = exog2,
+        h3 = exog3
+      )
+    )
+  }
+  
+  list(
+    lag1 = future_exog_1lag,
+    lag2 = future_exog_2lag,
+    lag3 = future_exog_3lag
+  )
+}
+
 # Fit baseline
 fit_ARIMA_baseline <- function(df) {
   
