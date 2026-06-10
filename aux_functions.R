@@ -220,7 +220,8 @@ forecast_SARIMAs <- function(model_list, h = 4, future_xreg_list = NULL) {
       
       if (is.null(obj$xreg)) {
         
-        forecast(obj$model, h = h)
+        forecast(obj$model, h = h,
+                 level = 99)
         
       } else {
         
@@ -240,7 +241,8 @@ forecast_SARIMAs <- function(model_list, h = 4, future_xreg_list = NULL) {
         forecast(
           obj$model,
           xreg = future_xreg,
-          h = h
+          h = h,
+          level = 99
         )
       }
       
@@ -297,7 +299,8 @@ forecast_baselines <- function(model_list, h = 4) {
     
     fc_list[[i]] <- tryCatch({
       
-      forecast::forecast(obj$model, h = h)
+      forecast::forecast(obj$model, h = h,
+                         level = 99)
       
     }, error = function(e) {
       message("Forecast failed for baseline model ", i, ": ", e$message)
@@ -325,7 +328,7 @@ get_forecasted_quantiles <- function(forecast_list) {
     if (is.null(fc)) return(NULL)
     
     # Recover SE from the 95% interval
-    se <- (fc$upper[, "95%"] - fc$mean) / qnorm(0.975)
+    se <- (fc$mean - fc$lower[, "99%"]) / qnorm(0.995)
     
     qmat <- sapply(probabilities, function(p) {
       qnorm(

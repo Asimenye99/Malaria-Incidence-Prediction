@@ -331,12 +331,16 @@ sarimax_models <- rolling_sarima(
   SARIMAX = TRUE,
   xreg_col = "temperature"
 )
+
 ```
 
 !
 !
 !
 ! I need to create a function with xreg values for the sarimax
+!
+!
+!
 
 ```{r}
 
@@ -373,8 +377,6 @@ temp_exog_3lag <- lapply(
 ```
 
 
-!
-
 ### National-Level Seasonal Forecasts
 
 ```{r}
@@ -385,15 +387,21 @@ SARIMA_forecasts <- forecast_SARIMAs(sarima_models, h = 3)
 BASELINE_forecasts <- forecast_baselines(baseline_models, h = 3)
 
 # Plot national forecast
+sarimax_forecasts_3lag <- forecast_SARIMAs(
+  model_list = sarimax_models,
+  h = 3, future_xreg_list = temp_exog_3lag
+)
+
+# Plot national forecast
 sarimax_forecasts_2lag <- forecast_SARIMAs(
   model_list = sarimax_models,
-  h = 3, future_xreg_list = future_xreg_list_2lag
+  h = 3, future_xreg_list = temp_exog_2lag
 )
 
 # Plot national forecast
 sarimax_forecasts_1lag <- forecast_SARIMAs(
   model_list = sarimax_models,
-  h = 3, future_xreg_list = future_xreg_list_1lag
+  h = 3, future_xreg_list = temp_exog_1lag
 )
 
 ```
@@ -424,6 +432,15 @@ Organize the quantiles in a way we may calculate WIS and MAE
 ```{r}
 
 
+head(SARIMAX_1_quantiles)
+
+
+```
+
+```{r}
+library(covidHubUtils)
+
+my_forecast_scores<-covidHubUtils::score_forecasts(predictive_quantiles_tb, truth)
 
 
 
