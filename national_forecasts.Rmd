@@ -35,6 +35,13 @@ library(tseries)
 library(lme4)
 library(forecast)
 library(kableExtra)
+library(lubridate)
+
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(lubridate)
+
 
 source("aux_functions.R")
 ```
@@ -376,7 +383,6 @@ temp_exog_3lag <- lapply(
 )
 ```
 
-
 ### National-Level Seasonal Forecasts
 
 ```{r}
@@ -399,7 +405,7 @@ sarimax_forecasts_2lag <- forecast_SARIMAs(
 )
 
 # Plot national forecast
-sarimax_forecasts_1lag <- forecast_SARIMAs(
+sarimax_forecasts_1lag <- forecast_SARIMAs1(
   model_list = sarimax_models,
   h = 3, future_xreg_list = temp_exog_1lag
 )
@@ -422,19 +428,15 @@ SARIMAX_3_quantiles <- get_forecasted_quantiles(sarimax_forecasts_3lag)
 SARIMAX_2_quantiles <- get_forecasted_quantiles(sarimax_forecasts_2lag)
 
 # Get quantiles
-SARIMAX_1_quantiles <- get_forecasted_quantiles(sarimax_forecasts_1lag)
+SARIMAX_TEMP_1LAG <- get_forecasted_quantiles1(sarimax_forecasts_1lag)
 
 ```
-
 
 Organize the quantiles in a way we may calculate WIS and MAE
 
 ```{r}
 
-
-head(SARIMAX_1_quantiles)
-
-
+submission_1 <- format_forecast_submission(SARIMAX_TEMP_1LAG)
 ```
 
 ```{r}

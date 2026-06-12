@@ -98,7 +98,8 @@ fit_ARIMA_baseline <- function(df) {
     model = fit,
     coefficients = coef_table,
     data = df2,
-    ts = ts_d
+    ts = ts_d,
+    forecast_date = max(df$Date)
   )
 }
 
@@ -196,7 +197,8 @@ fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
     coefficients = coef_table,
     data = df2,
     ts = ts_d,
-    xreg = xreg_mat
+    xreg = xreg_mat,
+    forecast_date = max(df$Date)
   )
 }
 
@@ -256,6 +258,76 @@ forecast_SARIMAs <- function(model_list, h = 4, future_xreg_list = NULL) {
   
   fc_list
 }
+
+
+
+
+
+
+forecast_SARIMAs1 <- function(model_list, h = 4, future_xreg_list = NULL) {
+  
+  fc_list <- vector("list", length(model_list))
+  
+  for (i in seq_along(model_list)) {
+    
+    obj <- model_list[[i]]
+    
+    if (is.null(obj)) {
+      fc_list[[i]] <- NULL
+      next
+    }
+    
+    fc_list[[i]] <- tryCatch({
+      
+      fc <- if (is.null(obj$xreg)) {
+        
+        forecast(
+          obj$model,
+          h = h,
+          level = 99
+        )
+        
+      } else {
+        
+        if (is.null(future_xreg_list) || is.null(future_xreg_list[[i]])) {
+          stop("Missing future xreg values")
+        }
+        
+        future_xreg <- future_xreg_list[[i]]
+        
+        future_xreg <- matrix(
+          as.numeric(future_xreg),
+          ncol = ncol(obj$xreg)
+        )
+        
+        colnames(future_xreg) <- colnames(obj$xreg)
+        
+        forecast(
+          obj$model,
+          xreg = future_xreg,
+          h = h,
+          level = 99
+        )
+      }
+      
+      list(
+        forecast = fc,
+        forecast_date = obj$forecast_date
+      )
+      
+    }, error = function(e) {
+      message("Forecast failed for model ", i, ": ", e$message)
+      NULL
+    })
+  }
+  
+  names(fc_list) <- paste0("window_", seq_along(model_list))
+  
+  fc_list
+}
+
+
+
 
 
 # Rolling SARIMA
@@ -343,4 +415,97 @@ get_forecasted_quantiles <- function(forecast_list) {
     
     qmat
   })
+}
+
+
+
+get_forecasted_quantiles1 <- function(forecast_list) {
+  
+  probabilities <- c(
+    0.01, 0.025,
+    seq(0.05, 0.95, by = 0.05),
+    0.975, 0.99
+  )
+  
+  lapply(forecast_list, function(fc_obj) {
+    
+    if (is.null(fc_obj)) return(NULL)
+    
+    fc <- fc_obj$forecast
+    
+    # Recover SE from the 99% interval
+    se <- (fc$mean - fc$lower[, "99%"]) / qnorm(0.995)
+    
+    qmat <- sapply(probabilities, function(p) {
+      qnorm(
+        p,
+        mean = fc$mean,
+        sd = se
+      )
+    })
+    
+    colnames(qmat) <- probabilities
+    rownames(qmat) <- paste0("h", seq_along(fc$mean))
+    
+    list(
+      quantiles = qmat,
+      forecast_date = fc_obj$forecast_date
+    )
+  })
+}
+
+
+
+format_forecast_for_WIS<- function(quantile_object) {
+  
+  model_name <- deparse(substitute(quantile_object))
+  
+  bind_rows(
+    lapply(names(quantile_object), function(w) {
+      
+      qmat <- quantile_object[[w]]$quantiles
+      fc_date <- quantile_object[[w]]$forecast_date
+      
+      quantile_rows <- qmat %>%
+        as.data.frame() %>%
+        rownames_to_column("horizon") %>%
+        pivot_longer(
+          cols = -horizon,
+          names_to = "quantile",
+          values_to = "value"
+        ) %>%
+        mutate(
+          model = model_name,
+          forecast_date = as.Date(fc_date),
+          location = "National",
+          horizon = as.numeric(gsub("h", "", horizon)),
+          temporal_resolution = "month",
+          target_variable = "incidence",
+          target_end_date = forecast_date %m+% months(horizon),
+          type = "quantile",
+          quantile = as.numeric(quantile)
+        )
+      
+      point_rows <- quantile_rows %>%
+        filter(quantile == 0.5) %>%
+        mutate(
+          type = "point",
+          quantile = NA_real_
+        )
+      
+      bind_rows(quantile_rows, point_rows)
+    })
+  ) %>%
+    select(
+      model,
+      forecast_date,
+      location,
+      horizon,
+      temporal_resolution,
+      target_variable,
+      target_end_date,
+      type,
+      quantile,
+      value
+    )
 }
