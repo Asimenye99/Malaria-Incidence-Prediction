@@ -70,7 +70,7 @@ fit_ARIMA_baseline <- function(df) {
   fit <- tryCatch(
     Arima(
       ts_d,
-      order = c(0, 0, 0)
+      order = c(0, 1, 0)
     ),
     error = function(e) NULL
   )
@@ -111,7 +111,7 @@ rolling_baseline <- function(data,
   rolling_incidence <- list()
   
   for (i in 1:n_windows) {
-    incidence_window <- data[(1 + i):(window_size + i), ]
+    incidence_window <- data[(i):(window_size +  i - 1), ] # I needed the -1 so window size begin on 1 to 60
     rolling_incidence[[i]] <- fit_ARIMA_baseline(incidence_window)
     print(i)
   }
@@ -342,7 +342,7 @@ rolling_sarima <- function(
   
   for (i in 1:n_windows) {
     
-    incidence_window <- national_incidence[(1 + i):(60 + i), ]
+    incidence_window <- national_incidence[(i):(60 + i -1), ] # I needed the -1 so window size begin on 1 to 60
     
     rolling_incidence[[i]] <- fit_SARIMA(
       df = incidence_window,
@@ -373,6 +373,44 @@ forecast_baselines <- function(model_list, h = 4) {
       
       forecast::forecast(obj$model, h = h,
                          level = 99)
+      
+    }, error = function(e) {
+      message("Forecast failed for baseline model ", i, ": ", e$message)
+      NULL
+    })
+  }
+  
+  names(fc_list) <- paste0("window_", seq_along(model_list))
+  
+  return(fc_list)
+}
+
+
+forecast_baselines1 <- function(model_list, h = 4) {
+  
+  fc_list <- vector("list", length(model_list))
+  
+  for (i in seq_along(model_list)) {
+    
+    obj <- model_list[[i]]
+    
+    if (is.null(obj) || is.null(obj$model)) {
+      fc_list[[i]] <- NULL
+      next
+    }
+    
+    fc_list[[i]] <- tryCatch({
+      
+      fc <- forecast::forecast(
+        obj$model,
+        h = h,
+        level = 99
+      )
+      
+      list(
+        forecast = fc,
+        forecast_date = obj$forecast_date
+      )
       
     }, error = function(e) {
       message("Forecast failed for baseline model ", i, ": ", e$message)

@@ -387,19 +387,19 @@ temp_exog_3lag <- lapply(
 
 ```{r}
 # Plot national forecast
-SARIMA_forecasts <- forecast_SARIMAs(sarima_models, h = 3)
+SARIMA_forecasts <- forecast_SARIMAs1(sarima_models, h = 3)
 
 # Plot national forecast
-BASELINE_forecasts <- forecast_baselines(baseline_models, h = 3)
+BASELINE_forecasts <- forecast_baselines1(baseline_models, h = 3)
 
 # Plot national forecast
-sarimax_forecasts_3lag <- forecast_SARIMAs(
+sarimax_forecasts_3lag <- forecast_SARIMAs1(
   model_list = sarimax_models,
   h = 3, future_xreg_list = temp_exog_3lag
 )
 
 # Plot national forecast
-sarimax_forecasts_2lag <- forecast_SARIMAs(
+sarimax_forecasts_2lag <- forecast_SARIMAs1(
   model_list = sarimax_models,
   h = 3, future_xreg_list = temp_exog_2lag
 )
@@ -416,16 +416,17 @@ Get quantiles for each forecast
 
 ```{r}
 # Get quantiles
-SARIMA_quantiles <- get_forecasted_quantiles(SARIMA_forecasts)
+SARIMA_quantiles <- get_forecasted_quantiles1(SARIMA_forecasts)
 
 # Get quantiles
-BASELINE_quantiles <- get_forecasted_quantiles(BASELINE_forecasts)
+BASELINE_quantiles <- get_forecasted_quantiles1(BASELINE_forecasts)
+
+BASELINE_quantiles$window_1$forecast_date
+# Get quantiles
+SARIMAX_3_quantiles <- get_forecasted_quantiles1(sarimax_forecasts_3lag)
 
 # Get quantiles
-SARIMAX_3_quantiles <- get_forecasted_quantiles(sarimax_forecasts_3lag)
-
-# Get quantiles
-SARIMAX_2_quantiles <- get_forecasted_quantiles(sarimax_forecasts_2lag)
+SARIMAX_2_quantiles <- get_forecasted_quantiles1(sarimax_forecasts_2lag)
 
 # Get quantiles
 SARIMAX_TEMP_1LAG <- get_forecasted_quantiles1(sarimax_forecasts_1lag)
@@ -436,7 +437,11 @@ Organize the quantiles in a way we may calculate WIS and MAE
 
 ```{r}
 
-submission_1 <- format_forecast_submission(SARIMAX_TEMP_1LAG)
+submission_1 <- format_forecast_for_WIS(SARIMAX_TEMP_1LAG)
+
+formatted_baseline_forecasts<-format_forecast_for_WIS(BASELINE_quantiles)
+
+head(submission_1)
 ```
 
 ```{r}
@@ -444,11 +449,7 @@ library(covidHubUtils)
 
 my_forecast_scores<-covidHubUtils::score_forecasts(predictive_quantiles_tb, truth)
 
-
-
 ```
-
-
 
 !
 ! Using temperature and rainfall, the baseline and the sarima
@@ -476,96 +477,112 @@ my_forecast_scores<-covidHubUtils::score_forecasts(predictive_quantiles_tb, trut
 !
 
 ```{r}
-# Convert matrix to dataframe
-qdf <- as.data.frame(SARIMAX_1_quantiles[[2]])
+library(dplyr)
+library(ggplot2)
 
-qdf$horizon <- 1:nrow(qdf)
 
-# Plot
-ggplot(qdf, aes(x = horizon)) +
 
-  # 95% interval
-  geom_ribbon(
-    aes( ymin = `0.025`,  ymax = `0.975`),  alpha = 0.2) +
-  # 80% interval
-  geom_ribbon(
-    aes(ymin = `0.1`, ymax = `0.9`), alpha = 0.3) +
-  # 50% interval
-  geom_ribbon(  aes( ymin = `0.25`, ymax = `0.75`), alpha = 0.4) +
-  # Median
-  geom_line(  aes(y = `0.5`),  linewidth = 1) +
-  geom_point( aes(y = `0.5`),size = 2) +
-  theme_minimal() +
 
-  labs(
-    x = "Forecast horizon",
-    y = "Predicted incidence",
-    title = "ARIMA predictive quantiles"
-  )
+plot_forecast_window <- function(df, model_list, window_id, model_name, fc_date) {
+  
+  plot_df <- df %>%
+    filter(
+      model == model_name,
+      forecast_date == as.Date(fc_date),
+      type == "quantile"
+    ) %>%
+    mutate(quantile = as.numeric(quantile)) %>%
+    select(target_end_date, quantile, value) %>%
+    tidyr::pivot_wider(
+      names_from = quantile,
+      values_from = value
+    )
 
-# Convert matrix to dataframe
-qdf <- as.data.frame(SARIMAX_2_quantiles[[2]])
+  train_df <- model_list[[window_id]]$data %>%
+    select(Date, incidence_per_1k)
 
-qdf$horizon <- 1:nrow(qdf)
+  ggplot() +
+    # observed/training data
+    geom_line(
+      data = train_df,
+      aes(x = Date, y = incidence_per_1k),
+      linewidth = 0.8
+    ) +
+    geom_point(
+      data = train_df,
+      aes(x = Date, y = incidence_per_1k),
+      size = 1.5
+    ) +
 
-# Plot
-ggplot(qdf, aes(x = horizon)) +
+    # forecast intervals
+    geom_ribbon(
+      data = plot_df,
+      aes(x = target_end_date, ymin = `0.025`, ymax = `0.975`),
+      alpha = 0.2
+    ) +
+    geom_ribbon(
+      data = plot_df,
+      aes(x = target_end_date, ymin = `0.1`, ymax = `0.9`),
+      alpha = 0.3
+    ) +
+    geom_ribbon(
+      data = plot_df,
+      aes(x = target_end_date, ymin = `0.25`, ymax = `0.75`),
+      alpha = 0.4
+    ) +
+    geom_line(
+      data = plot_df,
+      aes(x = target_end_date, y = `0.5`),
+      linewidth = 1
+    ) +
+    geom_point(
+      data = plot_df,
+      aes(x = target_end_date, y = `0.5`),
+      size = 2
+    ) +
+    theme_minimal() +
+    labs(
+      x = "Date",
+      y = "Incidence per 1k",
+      title = paste(model_name, "forecast from", fc_date)
+    )
+}
 
-  # 95% interval
-  geom_ribbon(
-    aes( ymin = `0.025`,  ymax = `0.975`),  alpha = 0.2) +
-  # 80% interval
-  geom_ribbon(
-    aes(ymin = `0.1`, ymax = `0.9`), alpha = 0.3) +
-  # 50% interval
-  geom_ribbon(  aes( ymin = `0.25`, ymax = `0.75`), alpha = 0.4) +
-  # Median
-  geom_line(  aes(y = `0.5`),  linewidth = 1) +
-  geom_point( aes(y = `0.5`),size = 2) +
-  theme_minimal() +
+plot_forecast_window(
+  df = formatted_baseline_forecasts,
+  model_list = baseline_models,
+  window_id = 1,
+  model_name = "BASELINE_quantiles",
+  fc_date = "2022-12-01"
+)
 
-  labs(
-    x = "Forecast horizon",
-    y = "Predicted incidence",
-    title = "ARIMA predictive quantiles"
-  )
+
+
 ```
-
 
 
 ```{r}
-
-
-actual_incidence <- list()
-
-for (i in 1:23) {
-  incidence_window <- national_incidence[(61 + i):(64 + i), ]
-  actual_incidence [[i]] <- incidence_window
-  print(i)
-}
-
-
-for (i in 1:23) {
-  
-  fc <- forecast_list[[i]]
-  actual_df <- actual_incidence[[i]]
-  
-  # Extract forecast time index
-  fc_time <- time(fc$mean)
-  
-  # Build dataframe for plotting
-  actual_plot <- data.frame(
-    time = fc_time,
-    value = actual_df$incidence_per_1k
+submission_1 %>%
+  filter(
+    model == "SARIMAX_TEMP_1LAG",
+    type == "quantile",
+    quantile == 0.5
+  ) %>%
+  ggplot(aes(
+    x = target_end_date,
+    y = value,
+    color = as.factor(forecast_date),
+    group = forecast_date
+  )) +
+  geom_line() +
+  geom_point() +
+  theme_minimal() +
+  labs(
+    x = "Target end date",
+    y = "Median predicted incidence",
+    color = "Forecast date",
+    title = "Median forecasts by forecast window"
   )
-  
-  print(
-    autoplot(fc) +
-      geom_point(data = actual_plot,
-                 aes(x = time, y = value),
-                 color = "red", size = 2) +
-      labs(y = "Malaria incidence per 1k", x = "Year") +
-      theme_minimal()
-  )
-}
+
 ```
+
