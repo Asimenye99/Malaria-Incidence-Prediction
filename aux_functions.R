@@ -55,6 +55,7 @@ create_future_exog <- function(data, variable, n_windows = 23, train_length = 60
 # Fit baseline
 fit_ARIMA_baseline <- function(df) {
   
+  set.seed(1)
   all_dates <- seq(min(df$Date), max(df$Date), by = "month")
   
   df2 <- right_join(df, tibble(Date = all_dates), by = "Date") %>%
@@ -122,6 +123,8 @@ rolling_baseline <- function(data,
 
 
 fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
+
+  set.seed(1)
   
   all_dates <- seq(min(df$Date), max(df$Date), by = "month")
   
@@ -206,6 +209,8 @@ fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
 
 # Forecasts SARIMA models
 forecast_SARIMAs <- function(model_list, h = 4, future_xreg_list = NULL) {
+
+  set.seed(1)
   
   fc_list <- vector("list", length(model_list))
   
@@ -265,6 +270,8 @@ forecast_SARIMAs <- function(model_list, h = 4, future_xreg_list = NULL) {
 
 
 forecast_SARIMAs1 <- function(model_list, h = 4, future_xreg_list = NULL) {
+
+  set.seed(1)
   
   fc_list <- vector("list", length(model_list))
   
@@ -357,6 +364,8 @@ rolling_sarima <- function(
 }
 
 forecast_baselines <- function(model_list, h = 4) {
+
+  set.seed(1)
   
   fc_list <- vector("list", length(model_list))
   
@@ -387,6 +396,8 @@ forecast_baselines <- function(model_list, h = 4) {
 
 
 forecast_baselines1 <- function(model_list, h = 4) {
+
+  set.seed(1)
   
   fc_list <- vector("list", length(model_list))
   
