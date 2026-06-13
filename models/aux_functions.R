@@ -1,10 +1,15 @@
+##################################
+# ARIMA, SARIMA and SARIMAX models
+# VICTOR ARRAES ROCHA FELIX
 
+
+##############################################
 # Fit ARIMA (0,1,0) random walk baseline model
 fit_ARIMA_baseline <- function(df) {
   
   set.seed(1)
   
-  # make sure the order is correct
+  # organize the data in the correct order
   all_dates <- seq(min(df$Date), max(df$Date), by = "month") 
   df2 <- right_join(df, tibble(Date = all_dates), by = "Date") %>%
     arrange(Date) 
@@ -54,13 +59,19 @@ fit_ARIMA_baseline <- function(df) {
     forecast_date = max(df$Date) # export forecast date
   )
 }
-
+#######################################
 # Rolling window for the baseline model
 rolling_baseline <- function(data,
                              window_size = 60,
                              n_windows = 23) {
   
   rolling_incidence <- list()
+  
+  # crop the dataframe based the same number of rows as window size
+  # save the dataframe inside the list
+  # roll to the next subset and crop again
+  # save as a second item of the list
+  # and so on, based on the n_windows
   
   for (i in 1:n_windows) {
     incidence_window <- data[(i):(window_size +  i - 1), ] # I needed the -1 so window size begin on 1 to 60
@@ -71,79 +82,84 @@ rolling_baseline <- function(data,
   return(rolling_incidence)
 }
 
+#################
+# Baseline models 
 # function for forecasting ARIMA (0,1,0) baseline models
 
-forecast_baselines <- function(model_list, h = 4) {
+forecast_baselines <- function(model_list, h = 3) {
   
-  set.seed(1)
+  set.seed(1) # set seed for reproducibility
   
-  fc_list <- vector("list", length(model_list))
+  fc_list <- vector("list", length(model_list)) # create a list to save the forecasts
   
+  # for each model in model_list
   for (i in seq_along(model_list)) {
-    
+    # get the model information
     obj <- model_list[[i]]
-    
+    # Check if the model is valid
     if (is.null(obj) || is.null(obj$model)) {
       fc_list[[i]] <- NULL
       next
     }
-    
+    # Try to make a forecast with the model, if valid
+    # and save to a given element of the list
     fc_list[[i]] <- tryCatch({
-      
+      # forecast using each baseline trained before
       fc <- forecast::forecast(
-        obj$model,
-        h = h,
-        level = 99
+        obj$model, # get the model
+        h = h, # forecast h number of months ahead
+        level = 99 # forecast with 99 prediction interval
       )
-      
+      # save the forecast function output
+      # and the forecast date in a list
       list(
         forecast = fc,
         forecast_date = obj$forecast_date
       )
-      
+      # show an error message if the model don't work
     }, error = function(e) {
       message("Forecast failed for baseline model ", i, ": ", e$message)
       NULL
     })
   }
-  
+  # set the forecast name as window number
   names(fc_list) <- paste0("window_", seq_along(model_list))
-  
+  # return the final list with each forecast as one of its elements
   return(fc_list)
 }
 
 
-
+##################################
 # Fit SARIMA or SARIMAX models
 # use "xreg_col" if SARIMAX = TRUE
 
 fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
 
-  set.seed(1)
+  set.seed(1) # set seed for reproducibility
   
+  # organize the data in the correct order
   all_dates <- seq(min(df$Date), max(df$Date), by = "month")
-  
   df2 <- right_join(df, tibble(Date = all_dates), by = "Date") %>%
-    arrange(Date) %>%
-    mutate(Incidence_per_1k = replace_na(Incidence_per_1k, 0))
+    arrange(Date) 
   
+  # create a time series in the correct order
   ts_d <- ts(
     df2$Incidence_per_1k,
     start = c(year(min(df2$Date)), month(min(df2$Date))),
     frequency = 12
   )
-  
+  # create a xreg_mat value, which we will update if using SARIMAX
   xreg_mat <- NULL
   
   # Use xreg only if SARIMAX = TRUE
   if (SARIMAX) {
-    
+    # print a warning if you do not provide a xreg_col if SARIMAX = TRUE
     if (is.null(xreg_col)) {
       stop("You must provide xreg_col when SARIMAX = TRUE")
     }
-    
-    xreg_mat <- as.matrix(df2[, xreg_col, drop = FALSE])
-    
+    # transform the xreg_col into a matrix for the model
+    xreg_mat <- as.matrix(df2[xreg_col])
+    # try to fit the model
     fit <- tryCatch(
       auto.arima(
         ts_d,
@@ -156,7 +172,8 @@ fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
     )
     
   } else {
-    
+    # Fit a SARIMA if SARIMAX is not TRUE
+    # It does not require a xreg_mat
     fit <- tryCatch(
       auto.arima(
         ts_d,
@@ -167,12 +184,12 @@ fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
       error = function(e) NULL
     )
   }
-  
+  # If it cannot fit the model return NULL
   if (is.null(fit)) return(NULL)
-  
+  # get model results
   se <- sqrt(diag(vcov(fit)))
   ci <- confint(fit)
-  
+  # get model coefficients
   coef_table <- tibble(
     District = df$District[1],
     Parameter = names(coef(fit)),
@@ -189,7 +206,7 @@ fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
     D = arimaorder(fit)["D"],
     Q = arimaorder(fit)["Q"]
   )
-  
+  # results that will be exported
   list(
     model = fit,
     coefficients = coef_table,
@@ -200,7 +217,7 @@ fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
   )
 }
 
-
+############################################
 # this function gets the exogenous variables 
 # that are used on each ARIMAX forecasts
 # based on 1-lag, 2-lag or 3-lag approach
