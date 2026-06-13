@@ -1,6 +1,6 @@
 ---
 title: "Baseline Models"
-output: html_document
+output: pdf_document
 author: "Victor Arraes Rocha Felix"
 date: "2026-06-12"
 ---
@@ -82,7 +82,7 @@ Forecast 3 months ahead (h=3) for each fitted model.
 # Baseline forecasts
 BASELINE_model_forecasts <- lapply(
   baseline_models,
-  forecast_baselines1,
+  forecast_baselines,
   h = 3
 )
 
@@ -95,7 +95,7 @@ Get the forecasted results as quantiles and also get the forecast date.
 # Get quantiles and forecats date
 BASELINE <- lapply(
   BASELINE_model_forecasts,
-  get_forecasted_quantiles1
+  get_forecasted_quantiles
 )
 
 ```

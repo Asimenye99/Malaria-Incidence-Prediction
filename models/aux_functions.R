@@ -1,57 +1,53 @@
 
-# this function get the 
+# this function gets the exogenous variables 
+# that are used on each ARIMAX forecasts
+# based on 1-lag, 2-lag or 3-lag approach
 
-create_future_exog <- function(data, variable, n_windows = 23, train_length = 60) {
+get_exog_variables <- function(data, variable, lag = 1,
+                               n_windows = 23, train_length = 60) {
   
-  future_exog_1lag <- data.frame()
-  future_exog_2lag <- data.frame()
-  future_exog_3lag <- data.frame()
+  future_exog <- data.frame()
   
   for (i in 1:n_windows) {
     
-    exog60 <- data[[variable]][train_length + i -1 ] # get the exg value from row 60
-    exog59 <- data[[variable]][train_length + i -2 ] # get the value exg from row 59
-    exog58 <- data[[variable]][train_length + i -3 ] # get the value exg from row 58
+    exog60 <- data[[variable]][train_length + i - 1]
+    exog59 <- data[[variable]][train_length + i - 2]
+    exog58 <- data[[variable]][train_length + i - 3]
     
-    future_exog_1lag <- rbind(
-      future_exog_1lag,
-      data.frame(
+    if (lag == 1) {
+      row <- data.frame(
         window = i,
         lag = "lag1",
         h1 = exog60,
         h2 = exog60,
         h3 = exog60
       )
-    )
+    }
     
-    future_exog_2lag <- rbind(
-      future_exog_2lag,
-      data.frame(
+    if (lag == 2) {
+      row <- data.frame(
         window = i,
         lag = "lag2",
         h1 = exog59,
         h2 = exog60,
         h3 = exog60
       )
-    )
+    }
     
-    future_exog_3lag <- rbind(
-      future_exog_3lag,
-      data.frame(
+    if (lag == 3) {
+      row <- data.frame(
         window = i,
         lag = "lag3",
         h1 = exog58,
         h2 = exog59,
         h3 = exog60
       )
-    )
+    }
+    
+    future_exog <- rbind(future_exog, row)
   }
   
-  list(
-    lag1 = future_exog_1lag,
-    lag2 = future_exog_2lag,
-    lag3 = future_exog_3lag
-  )
+  future_exog
 }
 
 # Fit ARIMA baseline model
@@ -208,70 +204,7 @@ fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
 }
 
 
-
-# Forecasts SARIMA models
 forecast_SARIMAs <- function(model_list, h = 4, future_xreg_list = NULL) {
-
-  set.seed(1)
-  
-  fc_list <- vector("list", length(model_list))
-  
-  for (i in seq_along(model_list)) {
-    
-    obj <- model_list[[i]]
-    
-    if (is.null(obj)) {
-      fc_list[[i]] <- NULL
-      next
-    }
-    
-    fc_list[[i]] <- tryCatch({
-      
-      if (is.null(obj$xreg)) {
-        
-        forecast(obj$model, h = h,
-                 level = 99)
-        
-      } else {
-        
-        if (is.null(future_xreg_list) || is.null(future_xreg_list[[i]])) {
-          stop("Missing future xreg values")
-        }
-        
-        future_xreg <- future_xreg_list[[i]]
-        
-        future_xreg <- matrix(
-          as.numeric(future_xreg),
-          ncol = ncol(obj$xreg)
-        )
-        
-        colnames(future_xreg) <- colnames(obj$xreg)
-        
-        forecast(
-          obj$model,
-          xreg = future_xreg,
-          h = h,
-          level = 99
-        )
-      }
-      
-    }, error = function(e) {
-      message("Forecast failed for model ", i, ": ", e$message)
-      NULL
-    })
-  }
-  
-  names(fc_list) <- paste0("window_", seq_along(model_list))
-  
-  fc_list
-}
-
-
-
-
-
-
-forecast_SARIMAs1 <- function(model_list, h = 4, future_xreg_list = NULL) {
 
   set.seed(1)
   
@@ -366,39 +299,8 @@ rolling_sarima <- function(
   return(rolling_incidence)
 }
 
+
 forecast_baselines <- function(model_list, h = 4) {
-
-  set.seed(1)
-  
-  fc_list <- vector("list", length(model_list))
-  
-  for (i in seq_along(model_list)) {
-    
-    obj <- model_list[[i]]
-    
-    if (is.null(obj) || is.null(obj$model)) {
-      fc_list[[i]] <- NULL
-      next
-    }
-    
-    fc_list[[i]] <- tryCatch({
-      
-      forecast::forecast(obj$model, h = h,
-                         level = 99)
-      
-    }, error = function(e) {
-      message("Forecast failed for baseline model ", i, ": ", e$message)
-      NULL
-    })
-  }
-  
-  names(fc_list) <- paste0("window_", seq_along(model_list))
-  
-  return(fc_list)
-}
-
-
-forecast_baselines1 <- function(model_list, h = 4) {
 
   set.seed(1)
   
@@ -437,41 +339,8 @@ forecast_baselines1 <- function(model_list, h = 4) {
   return(fc_list)
 }
 
-# get forecasted quantiles
 
 get_forecasted_quantiles <- function(forecast_list) {
-  
-  probabilities <- c(
-    0.01, 0.025,
-    seq(0.05, 0.95, by = 0.05),
-    0.975, 0.99
-  )
-  
-  lapply(forecast_list, function(fc) {
-    
-    if (is.null(fc)) return(NULL)
-    
-    # Recover SE from the 95% interval
-    se <- (fc$mean - fc$lower[, "99%"]) / qnorm(0.995)
-    
-    qmat <- sapply(probabilities, function(p) {
-      qnorm(
-        p,
-        mean = fc$mean,
-        sd = se
-      )
-    })
-    
-    colnames(qmat) <- probabilities
-    rownames(qmat) <- paste0("h", seq_along(fc$mean))
-    
-    qmat
-  })
-}
-
-
-
-get_forecasted_quantiles1 <- function(forecast_list) {
   
   probabilities <- c(
     0.01, 0.025,
