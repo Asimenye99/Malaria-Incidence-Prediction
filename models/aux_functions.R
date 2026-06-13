@@ -3,12 +3,13 @@
 fit_ARIMA_baseline <- function(df) {
   
   set.seed(1)
-  all_dates <- seq(min(df$Date), max(df$Date), by = "month")
   
+  # make sure the order is correct
+  all_dates <- seq(min(df$Date), max(df$Date), by = "month") 
   df2 <- right_join(df, tibble(Date = all_dates), by = "Date") %>%
-    arrange(Date) %>%
-    mutate(Incidence_per_1k = replace_na(Incidence_per_1k, 0))
+    arrange(Date) 
   
+  # create a time series in the correct order
   ts_d <- ts(
     df2$Incidence_per_1k,
     start = c(year(min(df2$Date)), month(min(df2$Date))),
@@ -18,12 +19,14 @@ fit_ARIMA_baseline <- function(df) {
   fit <- tryCatch(
     Arima(
       ts_d,
-      order = c(0, 1, 0)
+      order = c(0, 1, 0) # fit a arima random walk
     ),
     error = function(e) NULL
   )
   
   if (is.null(fit)) return(NULL)
+  
+  # Save the Arima model
   
   se <- sqrt(diag(vcov(fit)))
   ci <- confint(fit)
@@ -42,12 +45,13 @@ fit_ARIMA_baseline <- function(df) {
     q = 0
   )
   
+  # Output of the function
   list(
     model = fit,
     coefficients = coef_table,
     data = df2,
     ts = ts_d,
-    forecast_date = max(df$Date)
+    forecast_date = max(df$Date) # export forecast date
   )
 }
 
@@ -344,10 +348,10 @@ rolling_sarima <- function(
 }
 
 
-#
+###################################
 # build quantiles for each forecast
 # based on 99% prediction interval
-#
+##################################
 
 compute_quantiles <- function(forecast_list) {
   
@@ -384,6 +388,8 @@ compute_quantiles <- function(forecast_list) {
   })
 }
 
+
+# format forecasted quantiles for WIS and MAE
 
 format_forecast_for_WIS<- function(quantile_object) {
   
@@ -439,6 +445,8 @@ format_forecast_for_WIS<- function(quantile_object) {
     )
 }
 
+
+# Format distric forecasts so we can evaluate later
 format_district_forecasts <- function(forecast_list,
                                       model_name = "MODEL") {
   
