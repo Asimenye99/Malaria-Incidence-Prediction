@@ -122,7 +122,7 @@ Formatting the forecasted data so we can later calculate WIS and MAE.
 #}
 
 
-formatted_baseline_forecasts<-format_district_forecasts(BASELINE)
+formatted_baseline_forecasts<-format_district_forecasts(BASELINE, model_name = "BASELINE")
 
 # take a look at the data
 head(formatted_baseline_forecasts)
