@@ -1,6 +1,7 @@
 ---
 title: "SARIMA Models"
 output: html_document
+author: "Victor Arraes Rocha Felix"
 date: "2026-06-12"
 ---
 
@@ -161,4 +162,76 @@ SARIMA_WIS_and_MAE<-covidHubUtils::score_forecasts(formatted_SARIMA_forecasts, t
 
 write.csv(SARIMA_WIS_and_MAE, "sarima_wis_and_mae.csv", row.names = FALSE)
 
+```
+
+```{r}
+
+forecast_plot_data <- formatted_baseline_forecasts %>%
+  filter(
+    model == "MODEL",
+    type == "quantile",
+    quantile %in% c(0.025, 0.5, 0.975)
+  ) %>%
+  tidyr::pivot_wider(
+    names_from = quantile,
+    values_from = value
+  )
+
+plots <- forecast_plot_data %>%
+  split(.$location) %>%
+  lapply(function(df) {
+    
+    loc <- unique(df$location)
+    
+    truth_loc <- truth %>%
+      filter(location == loc)
+    
+    ggplot(df, aes(
+      x = target_end_date,
+      group = forecast_date
+    )) +
+      geom_ribbon(aes(
+        ymin = `0.025`,
+        ymax = `0.975`,
+        fill = as.factor(forecast_date)
+      ), alpha = 0.2, color = NA) +
+      geom_line(aes(
+        y = `0.5`,
+        color = as.factor(forecast_date)
+      )) +
+      geom_point(aes(
+        y = `0.5`,
+        color = as.factor(forecast_date)
+      )) +
+      geom_line(
+        data = truth_loc,
+        aes(
+          x = target_end_date,
+          y = value
+        ),
+        inherit.aes = FALSE,
+        color = "black",
+        linewidth = 1
+      ) +
+      geom_point(
+        data = truth_loc,
+        aes(
+          x = target_end_date,
+          y = value
+        ),
+        inherit.aes = FALSE,
+        color = "black",
+        size = 2
+      ) +
+      theme_minimal() +
+      labs(
+        x = "Target end date",
+        y = "Incidence per 1k",
+        color = "Forecast date",
+        fill = "Forecast date",
+        title = loc
+      )+ theme(legend.position = "none")
+  })
+
+plots
 ```
