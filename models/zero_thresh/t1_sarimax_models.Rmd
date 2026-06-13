@@ -156,10 +156,10 @@ Get the forecasted results as quantiles and also get the forecast date.
 
 ```{r}
 
-# Get quantiles and forecats date
+# Compute quantiles for each forecast date
 SARIMAX <- lapply(
   SARIMAX_model_forecasts,
-  get_forecasted_quantiles
+  compute_quantiles
 )
 
 ```

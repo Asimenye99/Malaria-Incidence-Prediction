@@ -1,56 +1,5 @@
 
-# this function gets the exogenous variables 
-# that are used on each ARIMAX forecasts
-# based on 1-lag, 2-lag or 3-lag approach
-
-get_exog_variables <- function(data, variable, lag = 1,
-                               n_windows = 23, train_length = 60) {
-  
-  future_exog <- data.frame()
-  
-  for (i in 1:n_windows) {
-    
-    exog60 <- data[[variable]][train_length + i - 1]
-    exog59 <- data[[variable]][train_length + i - 2]
-    exog58 <- data[[variable]][train_length + i - 3]
-    
-    if (lag == 1) {
-      row <- data.frame(
-        window = i,
-        lag = "lag1",
-        h1 = exog60,
-        h2 = exog60,
-        h3 = exog60
-      )
-    }
-    
-    if (lag == 2) {
-      row <- data.frame(
-        window = i,
-        lag = "lag2",
-        h1 = exog59,
-        h2 = exog60,
-        h3 = exog60
-      )
-    }
-    
-    if (lag == 3) {
-      row <- data.frame(
-        window = i,
-        lag = "lag3",
-        h1 = exog58,
-        h2 = exog59,
-        h3 = exog60
-      )
-    }
-    
-    future_exog <- rbind(future_exog, row)
-  }
-  
-  future_exog
-}
-
-# Fit ARIMA baseline model
+# Fit ARIMA (0,1,0) random walk baseline model
 fit_ARIMA_baseline <- function(df) {
   
   set.seed(1)
@@ -118,8 +67,52 @@ rolling_baseline <- function(data,
   return(rolling_incidence)
 }
 
+# function for forecasting ARIMA (0,1,0) baseline models
 
-# Fit SARIMA or SARIMAX model
+forecast_baselines <- function(model_list, h = 4) {
+  
+  set.seed(1)
+  
+  fc_list <- vector("list", length(model_list))
+  
+  for (i in seq_along(model_list)) {
+    
+    obj <- model_list[[i]]
+    
+    if (is.null(obj) || is.null(obj$model)) {
+      fc_list[[i]] <- NULL
+      next
+    }
+    
+    fc_list[[i]] <- tryCatch({
+      
+      fc <- forecast::forecast(
+        obj$model,
+        h = h,
+        level = 99
+      )
+      
+      list(
+        forecast = fc,
+        forecast_date = obj$forecast_date
+      )
+      
+    }, error = function(e) {
+      message("Forecast failed for baseline model ", i, ": ", e$message)
+      NULL
+    })
+  }
+  
+  names(fc_list) <- paste0("window_", seq_along(model_list))
+  
+  return(fc_list)
+}
+
+
+
+# Fit SARIMA or SARIMAX models
+# use "xreg_col" if SARIMAX = TRUE
+
 fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
 
   set.seed(1)
@@ -204,6 +197,59 @@ fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
 }
 
 
+# this function gets the exogenous variables 
+# that are used on each ARIMAX forecasts
+# based on 1-lag, 2-lag or 3-lag approach
+
+get_exog_variables <- function(data, variable, lag = 1,
+                               n_windows = 23, train_length = 60) {
+  
+  future_exog <- data.frame()
+  
+  for (i in 1:n_windows) {
+    
+    exog60 <- data[[variable]][train_length + i - 1]
+    exog59 <- data[[variable]][train_length + i - 2]
+    exog58 <- data[[variable]][train_length + i - 3]
+    
+    if (lag == 1) {
+      row <- data.frame(
+        window = i,
+        lag = "lag1",
+        h1 = exog60,
+        h2 = exog60,
+        h3 = exog60
+      )
+    }
+    
+    if (lag == 2) {
+      row <- data.frame(
+        window = i,
+        lag = "lag2",
+        h1 = exog59,
+        h2 = exog60,
+        h3 = exog60
+      )
+    }
+    
+    if (lag == 3) {
+      row <- data.frame(
+        window = i,
+        lag = "lag3",
+        h1 = exog58,
+        h2 = exog59,
+        h3 = exog60
+      )
+    }
+    
+    future_exog <- rbind(future_exog, row)
+  }
+  
+  future_exog
+}
+
+# Forecast SARIMA and SARIMAX models
+# SARIMAX need exogenous variables
 forecast_SARIMAs <- function(model_list, h = 4, future_xreg_list = NULL) {
 
   set.seed(1)
@@ -269,10 +315,8 @@ forecast_SARIMAs <- function(model_list, h = 4, future_xreg_list = NULL) {
 }
 
 
-
-
-
-# Rolling SARIMA
+# Rolling windows for SARIMA
+# and for SARIMAX models
 rolling_sarima <- function(
     national_incidence,
     n_windows = 23,
@@ -300,47 +344,12 @@ rolling_sarima <- function(
 }
 
 
-forecast_baselines <- function(model_list, h = 4) {
+#
+# build quantiles for each forecast
+# based on 99% prediction interval
+#
 
-  set.seed(1)
-  
-  fc_list <- vector("list", length(model_list))
-  
-  for (i in seq_along(model_list)) {
-    
-    obj <- model_list[[i]]
-    
-    if (is.null(obj) || is.null(obj$model)) {
-      fc_list[[i]] <- NULL
-      next
-    }
-    
-    fc_list[[i]] <- tryCatch({
-      
-      fc <- forecast::forecast(
-        obj$model,
-        h = h,
-        level = 99
-      )
-      
-      list(
-        forecast = fc,
-        forecast_date = obj$forecast_date
-      )
-      
-    }, error = function(e) {
-      message("Forecast failed for baseline model ", i, ": ", e$message)
-      NULL
-    })
-  }
-  
-  names(fc_list) <- paste0("window_", seq_along(model_list))
-  
-  return(fc_list)
-}
-
-
-get_forecasted_quantiles <- function(forecast_list) {
+compute_quantiles <- function(forecast_list) {
   
   probabilities <- c(
     0.01, 0.025,
@@ -374,7 +383,6 @@ get_forecasted_quantiles <- function(forecast_list) {
     )
   })
 }
-
 
 
 format_forecast_for_WIS<- function(quantile_object) {

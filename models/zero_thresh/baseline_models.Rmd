@@ -92,10 +92,10 @@ Get the forecasted results as quantiles and also get the forecast date.
 
 ```{r}
 
-# Get quantiles and forecats date
+# Compute quantiles for each forecats date
 BASELINE <- lapply(
   BASELINE_model_forecasts,
-  get_forecasted_quantiles
+  compute_quantiles
 )
 
 ```
