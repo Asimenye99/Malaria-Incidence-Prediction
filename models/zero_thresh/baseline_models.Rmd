@@ -186,7 +186,7 @@ Plot all forecasts and the actual data
 
 forecast_plot_data <- formatted_baseline_forecasts %>%
   filter(
-    model == "MODEL",
+    model == "BASELINE",
     type == "quantile",
     quantile %in% c(0.025, 0.5, 0.975)
   ) %>%
