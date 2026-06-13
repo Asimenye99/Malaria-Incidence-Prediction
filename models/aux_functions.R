@@ -217,57 +217,6 @@ fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
   )
 }
 
-############################################
-# this function gets the exogenous variables 
-# that are used on each ARIMAX forecasts
-# based on 1-lag, 2-lag or 3-lag approach
-
-get_exog_variables <- function(data, variable, lag = 1,
-                               n_windows = 23, train_length = 60) {
-  
-  future_exog <- data.frame()
-  
-  for (i in 1:n_windows) {
-    
-    exog60 <- data[[variable]][train_length + i - 1]
-    exog59 <- data[[variable]][train_length + i - 2]
-    exog58 <- data[[variable]][train_length + i - 3]
-    
-    if (lag == 1) {
-      row <- data.frame(
-        window = i,
-        lag = "lag1",
-        h1 = exog60,
-        h2 = exog60,
-        h3 = exog60
-      )
-    }
-    
-    if (lag == 2) {
-      row <- data.frame(
-        window = i,
-        lag = "lag2",
-        h1 = exog59,
-        h2 = exog60,
-        h3 = exog60
-      )
-    }
-    
-    if (lag == 3) {
-      row <- data.frame(
-        window = i,
-        lag = "lag3",
-        h1 = exog58,
-        h2 = exog59,
-        h3 = exog60
-      )
-    }
-    
-    future_exog <- rbind(future_exog, row)
-  }
-  
-  future_exog
-}
 
 # Forecast SARIMA and SARIMAX models
 # SARIMAX need exogenous variables
@@ -364,6 +313,57 @@ rolling_sarima <- function(
   return(rolling_incidence)
 }
 
+############################################
+# this function gets the exogenous variables 
+# that are used on each ARIMAX forecasts
+# based on 1-lag, 2-lag or 3-lag approach
+
+get_exog_variables <- function(data, variable, lag = 1,
+                               n_windows = 23, train_length = 60) {
+  
+  future_exog <- data.frame()
+  
+  for (i in 1:n_windows) {
+    
+    exog60 <- data[[variable]][train_length + i - 1]
+    exog59 <- data[[variable]][train_length + i - 2]
+    exog58 <- data[[variable]][train_length + i - 3]
+    
+    if (lag == 1) {
+      row <- data.frame(
+        window = i,
+        lag = "lag1",
+        h1 = exog60,
+        h2 = exog60,
+        h3 = exog60
+      )
+    }
+    
+    if (lag == 2) {
+      row <- data.frame(
+        window = i,
+        lag = "lag2",
+        h1 = exog59,
+        h2 = exog60,
+        h3 = exog60
+      )
+    }
+    
+    if (lag == 3) {
+      row <- data.frame(
+        window = i,
+        lag = "lag3",
+        h1 = exog58,
+        h2 = exog59,
+        h3 = exog60
+      )
+    }
+    
+    future_exog <- rbind(future_exog, row)
+  }
+  
+  future_exog
+}
 
 ###################################
 # build quantiles for each forecast
