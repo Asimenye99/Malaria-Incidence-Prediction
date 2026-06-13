@@ -1,4 +1,6 @@
 
+# this function get the 
+
 create_future_exog <- function(data, variable, n_windows = 23, train_length = 60) {
   
   future_exog_1lag <- data.frame()
@@ -7,18 +9,18 @@ create_future_exog <- function(data, variable, n_windows = 23, train_length = 60
   
   for (i in 1:n_windows) {
     
-    exog1 <- data[[variable]][train_length + i]
-    exog2 <- data[[variable]][train_length + i + 1]
-    exog3 <- data[[variable]][train_length + i + 2]
+    exog60 <- data[[variable]][train_length + i -1 ] # get the exg value from row 60
+    exog59 <- data[[variable]][train_length + i -2 ] # get the value exg from row 59
+    exog58 <- data[[variable]][train_length + i -3 ] # get the value exg from row 58
     
     future_exog_1lag <- rbind(
       future_exog_1lag,
       data.frame(
         window = i,
         lag = "lag1",
-        h1 = exog1,
-        h2 = exog1,
-        h3 = exog1
+        h1 = exog60,
+        h2 = exog60,
+        h3 = exog60
       )
     )
     
@@ -27,9 +29,9 @@ create_future_exog <- function(data, variable, n_windows = 23, train_length = 60
       data.frame(
         window = i,
         lag = "lag2",
-        h1 = exog1,
-        h2 = exog2,
-        h3 = exog2
+        h1 = exog59,
+        h2 = exog60,
+        h3 = exog60
       )
     )
     
@@ -38,9 +40,9 @@ create_future_exog <- function(data, variable, n_windows = 23, train_length = 60
       data.frame(
         window = i,
         lag = "lag3",
-        h1 = exog1,
-        h2 = exog2,
-        h3 = exog3
+        h1 = exog58,
+        h2 = exog59,
+        h3 = exog60
       )
     )
   }
@@ -52,7 +54,7 @@ create_future_exog <- function(data, variable, n_windows = 23, train_length = 60
   )
 }
 
-# Fit baseline
+# Fit ARIMA baseline model
 fit_ARIMA_baseline <- function(df) {
   
   set.seed(1)
@@ -104,7 +106,7 @@ fit_ARIMA_baseline <- function(df) {
   )
 }
 
-# Rolling baseline
+# Rolling window for the baseline model
 rolling_baseline <- function(data,
                              window_size = 60,
                              n_windows = 23) {
@@ -121,7 +123,7 @@ rolling_baseline <- function(data,
 }
 
 
-
+# Fit SARIMA or SARIMAX model
 fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
 
   set.seed(1)
@@ -140,7 +142,7 @@ fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
   
   xreg_mat <- NULL
   
-  # Build xreg only if SARIMAX = TRUE
+  # Use xreg only if SARIMAX = TRUE
   if (SARIMAX) {
     
     if (is.null(xreg_col)) {
@@ -154,7 +156,7 @@ fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
         ts_d,
         xreg = xreg_mat,
         seasonal = TRUE,
-        stepwise = FALSE,
+        stepwise = TRUE,
         approximation = FALSE
       ),
       error = function(e) NULL
@@ -166,7 +168,7 @@ fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
       auto.arima(
         ts_d,
         seasonal = TRUE,
-        stepwise = FALSE,
+        stepwise = TRUE,
         approximation = FALSE
       ),
       error = function(e) NULL
