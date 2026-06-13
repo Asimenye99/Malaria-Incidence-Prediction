@@ -1,5 +1,5 @@
 ---
-title: "SARIMA Models"
+title: "SARIMAX Models - Temperature 1-month-lag"
 output: html_document
 author: "Victor Arraes Rocha Felix"
 date: "2026-06-12"
@@ -70,7 +70,9 @@ sarima_models <- lapply(
   district_data_list,
   rolling_sarima,
   n_windows = 22,
-  window_size = 60
+  window_size = 60,
+  SARIMAX = TRUE,
+  xreg_col = "temperature"
 )
 
 ```
@@ -166,9 +168,9 @@ write.csv(SARIMA_WIS_and_MAE, "sarima_wis_and_mae.csv", row.names = FALSE)
 
 ```{r}
 
-forecast_plot_data <- formatted_SARIMA_forecasts %>%
+forecast_plot_data <- formatted_baseline_forecasts %>%
   filter(
-    model == "SARIMA",
+    model == "MODEL",
     type == "quantile",
     quantile %in% c(0.025, 0.5, 0.975)
   ) %>%

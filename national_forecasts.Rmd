@@ -36,13 +36,12 @@ library(lme4)
 library(forecast)
 library(kableExtra)
 library(lubridate)
-
-library(dplyr)
 library(tidyr)
 library(tibble)
-library(lubridate)
+```
 
 
+```{r}
 source("aux_functions.R")
 ```
 
@@ -296,10 +295,11 @@ Now we will start to build some SARIMA and SARAIMAX models.
 "ts_nat" is the national timeseries of Malaria incidence
 Let's try to come up with some models and model evaluation approaches for this data. Later we will do something similar to each district.
 
+```{r}
+correct_incidence_data <- read_csv("malaria_lagged_climate_export.csv")
 
-
-
-
+head(correct_incidence_data)
+```
 We need to make the National data in a format that we can use to fit the model.
 
 ```{r}
@@ -325,6 +325,9 @@ What we will fit the model based on a window of 60 months. This is basically the
 
 ```{r}
 baseline_models <- rolling_baseline(national_incidence, n_windows = 23)
+
+
+head(national_incidence)
 ```
 
 ```{r}
@@ -392,6 +395,7 @@ SARIMA_forecasts <- forecast_SARIMAs1(sarima_models, h = 3)
 # Plot national forecast
 BASELINE_forecasts <- forecast_baselines1(baseline_models, h = 3)
 
+
 # Plot national forecast
 sarimax_forecasts_3lag <- forecast_SARIMAs1(
   model_list = sarimax_models,
@@ -421,7 +425,6 @@ SARIMA_quantiles <- get_forecasted_quantiles1(SARIMA_forecasts)
 # Get quantiles
 BASELINE_quantiles <- get_forecasted_quantiles1(BASELINE_forecasts)
 
-BASELINE_quantiles$window_1$forecast_date
 # Get quantiles
 SARIMAX_3_quantiles <- get_forecasted_quantiles1(sarimax_forecasts_3lag)
 

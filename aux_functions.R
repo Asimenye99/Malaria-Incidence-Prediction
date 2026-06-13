@@ -60,10 +60,10 @@ fit_ARIMA_baseline <- function(df) {
   
   df2 <- right_join(df, tibble(Date = all_dates), by = "Date") %>%
     arrange(Date) %>%
-    mutate(incidence_per_1k = replace_na(incidence_per_1k, 0))
+    mutate(Incidence_per_1k = replace_na(Incidence_per_1k, 0))
   
   ts_d <- ts(
-    df2$incidence_per_1k,
+    df2$Incidence_per_1k,
     start = c(year(min(df2$Date)), month(min(df2$Date))),
     frequency = 12
   )
@@ -130,10 +130,10 @@ fit_SARIMA <- function(df, SARIMAX = FALSE, xreg_col = NULL) {
   
   df2 <- right_join(df, tibble(Date = all_dates), by = "Date") %>%
     arrange(Date) %>%
-    mutate(incidence_per_1k = replace_na(incidence_per_1k, 0))
+    mutate(Incidence_per_1k = replace_na(Incidence_per_1k, 0))
   
   ts_d <- ts(
-    df2$incidence_per_1k,
+    df2$Incidence_per_1k,
     start = c(year(min(df2$Date)), month(min(df2$Date))),
     frequency = 12
   )
@@ -266,9 +266,6 @@ forecast_SARIMAs <- function(model_list, h = 4, future_xreg_list = NULL) {
 
 
 
-
-
-
 forecast_SARIMAs1 <- function(model_list, h = 4, future_xreg_list = NULL) {
 
   set.seed(1)
@@ -336,20 +333,20 @@ forecast_SARIMAs1 <- function(model_list, h = 4, future_xreg_list = NULL) {
 
 
 
-
 # Rolling SARIMA
 rolling_sarima <- function(
     national_incidence,
     n_windows = 23,
     SARIMAX = FALSE,
-    xreg_col = NULL
+    xreg_col = NULL,
+    window_size = 60
 ) {
   
   rolling_incidence <- list()
   
   for (i in 1:n_windows) {
     
-    incidence_window <- national_incidence[(i):(60 + i -1), ] # I needed the -1 so window size begin on 1 to 60
+    incidence_window <- national_incidence[(i):(window_size + i -1), ] # I needed the -1 so window size begin on 1 to 60
     
     rolling_incidence[[i]] <- fit_SARIMA(
       df = incidence_window,
@@ -557,4 +554,27 @@ format_forecast_for_WIS<- function(quantile_object) {
       quantile,
       value
     )
+}
+
+format_district_forecasts <- function(forecast_list,
+                                      model_name = "MODEL") {
+  
+  output <- data.frame()
+  
+  for (district_name in names(forecast_list)) {
+    
+    forecast_of_one_district <- format_forecast_for_WIS(
+      forecast_list[[district_name]]
+    )
+    
+    forecast_of_one_district$location <- district_name
+    forecast_of_one_district$model <- model_name
+    
+    output <- bind_rows(
+      output,
+      forecast_of_one_district
+    )
+  }
+  
+  output
 }
