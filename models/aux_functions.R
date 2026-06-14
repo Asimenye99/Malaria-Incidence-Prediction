@@ -318,44 +318,52 @@ rolling_sarima <- function(
 # that are used on each ARIMAX forecasts
 # based on 1-lag, 2-lag or 3-lag approach
 
-get_exog_variables <- function(data, variable, lag = 1,
-                               n_windows = 23, train_length = 60) {
+get_exog_variables <- function(data, # dataframe with incidence, date, temperature and rainfall
+                               variable, # name of the column of the exogenous variable
+                               lag = 1, # choose lag 1,2 or 3
+                               n_windows = 23, # n_windows need to be the same as on the fitted models
+                               train_length = 60 # train_lentgh need to be the same as on the fitted models 
+                               ) {
   
-  future_exog <- data.frame()
-  
+  future_exog <- data.frame() # empty dataframe to store future exogenous variables
+  # 
   for (i in 1:n_windows) {
     
-    exog60 <- data[[variable]][train_length + i - 1]
-    exog59 <- data[[variable]][train_length + i - 2]
-    exog58 <- data[[variable]][train_length + i - 3]
+    exog_var_at_forecast_month <- data[[variable]][train_length + i - 1] # row 60 if window size 60
+    exog_var_at_forecast_month_minus1 <- data[[variable]][train_length + i - 2] # row 59 if window size 60
+    exog_var_at_forecast_month_minus2 <- data[[variable]][train_length + i - 3] # row 58 if window size 60
     
+    # if lag 1 we will repeat exog_var_at_forecast_month
     if (lag == 1) {
       row <- data.frame(
         window = i,
         lag = "lag1",
-        h1 = exog60,
-        h2 = exog60,
-        h3 = exog60
+        h1 = exog_var_at_forecast_month,
+        h2 = exog_var_at_forecast_month,
+        h3 = exog_var_at_forecast_month
       )
     }
-    
+    # if lag 2 we will use exog_var_at_forecast_month_minus1 for h1
+    # and repeat exog_var_at_forecast_month for h2 and h3
     if (lag == 2) {
       row <- data.frame(
         window = i,
         lag = "lag2",
-        h1 = exog59,
-        h2 = exog60,
-        h3 = exog60
+        h1 = exog_var_at_forecast_month_minus1,
+        h2 = exog_var_at_forecast_month,
+        h3 = exog_var_at_forecast_month
       )
     }
-    
+    # if lag 3 we will use exog_var_at_forecast_month_minus2 for h1
+    # exog_var_at_forecast_month_minus1 for h2 
+    # exog_var_at_forecast_month for h3 
     if (lag == 3) {
       row <- data.frame(
         window = i,
         lag = "lag3",
-        h1 = exog58,
-        h2 = exog59,
-        h3 = exog60
+        h1 = exog_var_at_forecast_month_minus2,
+        h2 = exog_var_at_forecast_month_minus1,
+        h3 = exog_var_at_forecast_month
       )
     }
     
