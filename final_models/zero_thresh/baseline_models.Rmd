@@ -1,0 +1,255 @@
+---
+title: "Baseline Models"
+output: pdf_document
+author: "Victor Arraes Rocha Felix"
+date: "2026-06-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(forecast)
+library(ggplot2)
+library(zoo)
+library(tidyverse)
+library(ggplot2)
+library(lubridate) #dealing with dates
+library(broom)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(scales)
+library(patchwork)
+library(tseries)
+library(lme4)
+library(forecast)
+library(kableExtra)
+library(tidyr)
+library(tibble)
+```
+
+Loading auxiliary functions
+
+```{r}
+source("../aux_functions.R")
+```
+
+Let's start loading the data district name, Malaria incidence and lagged covariates
+
+```{r}
+correct_incidence_data <- read_csv("../malaria_lagged_climate_export.csv")
+
+head(correct_incidence_data)
+```
+
+Split the data by district creating a list of dataframes and make sure the data is in a correct order by Date.
+
+```{r}
+
+# Transforming the data in a list of dataframes by District
+district_data_list <- correct_incidence_data %>%
+  mutate(
+    Date = my(paste(Incidence_Month, Year))
+  ) %>%
+  arrange(District, Date) %>%
+  group_by(District) %>%
+  group_split() %>%
+  setNames(unique(sort(correct_incidence_data$District)))
+
+```
+
+Fit the baseline of each district (single dataframe in the list) on a rollinnf window of lengh 60 which makes up to 22 windows across the whole data.
+
+```{r}
+
+# Fit each model for each district on a rolling window
+baseline_models <- lapply(
+  district_data_list,
+  rolling_baseline,
+  n_windows = 19,
+  window_size = 60
+)
+
+```
+
+Forecast 3 months ahead (h=3) for each fitted model.
+
+```{r}
+
+# Baseline forecasts
+BASELINE_model_forecasts <- lapply(
+  baseline_models,
+  forecast_baselines,
+  h = 3
+)
+
+```
+
+Get the forecasted results as quantiles and also get the forecast date.
+
+```{r}
+
+# Compute quantiles for each forecats date
+BASELINE <- lapply(
+  BASELINE_model_forecasts,
+  compute_quantiles
+)
+
+```
+
+Formatting the forecasted data so we can later calculate WIS and MAE.
+
+```{r}
+
+#formatted_baseline_forecasts <- data.frame()
+
+#for (district_name in names(BASELINE)) {
+
+#  forecast_of_one_district <- format_forecast_for_WIS(
+#    BASELINE[[district_name]]
+#  )
+
+#  forecast_of_one_district$location <- district_name
+#  forecast_of_one_district$model <- "BASELINE"
+
+#  formatted_baseline_forecasts <- bind_rows(
+#    formatted_baseline_forecasts,
+#    forecast_of_one_district
+#  )
+#}
+
+
+formatted_baseline_forecasts<-format_district_forecasts(BASELINE, model_name = "BASELINE")
+
+# take a look at the data
+head(formatted_baseline_forecasts)
+
+```
+
+Set all values bellow 0 to 0, to keep only possible forecasted values.
+
+```{r}
+
+formatted_baseline_forecasts$value[
+  formatted_baseline_forecasts$value < 0
+] <- 0
+
+```
+
+Save baseline forecasts
+
+```{r}
+
+write.csv(formatted_baseline_forecasts, "baseline_forecasts.csv", row.names = FALSE)
+
+```
+
+
+Formatting the initial data so we can compare the forecasts with actual values.
+
+```{r}
+
+head(correct_incidence_data)
+
+truth <- correct_incidence_data %>%
+  mutate(
+    target_end_date = my(paste(Incidence_Month, Year))
+  ) %>%
+  transmute(
+    target_end_date,
+    location = District,
+    value = Incidence_per_1k,
+    target_variable = "incidence",
+    model = "BASELINE"
+  )
+
+head(truth)
+
+```
+
+Get the Weighted Interval Scores (WIS) and Absolute Error of each forecast based on actual values.
+
+```{r}
+
+BASELINE_WIS_and_MAE<-covidHubUtils::score_forecasts(formatted_baseline_forecasts, truth)
+
+write.csv(BASELINE_WIS_and_MAE, "baseline_wis_and_mae.csv", row.names = FALSE)
+
+```
+
+Plot all forecasts and the actual data
+
+```{r}
+
+forecast_plot_data <- formatted_baseline_forecasts %>%
+  filter(
+    model == "BASELINE",
+    type == "quantile",
+    quantile %in% c(0.025, 0.5, 0.975)
+  ) %>%
+  tidyr::pivot_wider(
+    names_from = quantile,
+    values_from = value
+  )
+
+plots <- forecast_plot_data %>%
+  split(.$location) %>%
+  lapply(function(df) {
+    
+    loc <- unique(df$location)
+    
+    truth_loc <- truth %>%
+      filter(location == loc)
+    
+    ggplot(df, aes(
+      x = target_end_date,
+      group = forecast_date
+    )) +
+      geom_ribbon(aes(
+        ymin = `0.025`,
+        ymax = `0.975`,
+        fill = as.factor(forecast_date)
+      ), alpha = 0.2, color = NA) +
+      geom_line(aes(
+        y = `0.5`,
+        color = as.factor(forecast_date)
+      )) +
+      geom_point(aes(
+        y = `0.5`,
+        color = as.factor(forecast_date)
+      )) +
+      geom_line(
+        data = truth_loc,
+        aes(
+          x = target_end_date,
+          y = value
+        ),
+        inherit.aes = FALSE,
+        color = "black",
+        linewidth = 1
+      ) +
+      geom_point(
+        data = truth_loc,
+        aes(
+          x = target_end_date,
+          y = value
+        ),
+        inherit.aes = FALSE,
+        color = "black",
+        size = 2
+      ) +
+      theme_minimal() +
+      labs(
+        x = "Target end date",
+        y = "Incidence per 1k",
+        color = "Forecast date",
+        fill = "Forecast date",
+        title = loc
+      )+ theme(legend.position = "none")
+  })
+
+plots
+```

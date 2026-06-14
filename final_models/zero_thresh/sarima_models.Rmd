@@ -1,0 +1,237 @@
+---
+title: "SARIMA Models"
+output: pdf_document
+author: "Victor Arraes Rocha Felix"
+date: "2026-06-12"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(forecast)
+library(ggplot2)
+library(zoo)
+library(tidyverse)
+library(ggplot2)
+library(lubridate) #dealing with dates
+library(broom)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(scales)
+library(patchwork)
+library(tseries)
+library(lme4)
+library(forecast)
+library(kableExtra)
+library(tidyr)
+library(tibble)
+```
+
+Loading auxiliary functions
+
+```{r}
+source("../aux_functions.R")
+```
+
+Let's start loading the data district name, Malaria incidence and lagged covariates
+
+```{r}
+correct_incidence_data <- read_csv("../malaria_lagged_climate_export.csv")
+
+head(correct_incidence_data)
+```
+
+Split the data by district creating a list of dataframes and make sure the data is in a correct order by Date.
+
+```{r}
+
+# Transforming the data in a list of dataframes by District
+districts_data_list <- correct_incidence_data %>%
+  mutate(
+    Date = my(paste(Incidence_Month, Year))
+  ) %>%
+  arrange(District, Date) %>%
+  group_by(District) %>%
+  group_split() %>%
+  setNames(unique(sort(correct_incidence_data$District)))
+
+```
+
+Fit the baseline of each district (single dataframe in the list) on a rolling window of length 60 which makes up to 22 windows across the whole data.
+
+```{r}
+
+# Fit each model for each district on a rolling window
+sarima_models <- lapply(
+  districts_data_list,
+  rolling_sarima,
+  n_windows = 19,
+  window_size = 60
+)
+
+```
+
+Forecast 3 months ahead (h=3) for each fitted model.
+
+```{r}
+
+# Baseline forecasts
+SARIMA_model_forecasts <- lapply(
+  sarima_models,
+  forecast_SARIMAs,
+  h = 3
+)
+
+```
+
+Get the forecasted results as quantiles and also get the forecast date.
+
+```{r}
+
+# Build quantiles for each forecast date
+SARIMA <- lapply(
+  SARIMA_model_forecasts,
+  compute_quantiles
+)
+
+```
+
+Formatting the forecasted data so we can later calculate WIS and MAE.
+
+
+```{r}
+
+formatted_SARIMA_forecasts <- format_district_forecasts(
+  SARIMA,
+  model_name = "SARIMA"
+)
+
+
+# take a look at the data
+head(formatted_SARIMA_forecasts)
+```
+
+Set all values bellow 0 to 0, to keep only possible forecasted values.
+
+```{r}
+
+formatted_SARIMA_forecasts$value[
+  formatted_SARIMA_forecasts$value < 0
+] <- 0
+
+```
+
+Save baseline forecasts
+
+```{r}
+
+write.csv(formatted_SARIMA_forecasts, "SARIMA_forecasts.csv", row.names = FALSE)
+
+```
+
+
+Formatting the initial data so we can compare the forecasts with actual values.
+
+```{r}
+
+truth <- correct_incidence_data %>%
+  mutate(
+    target_end_date = my(paste(Incidence_Month, Year))
+  ) %>%
+  transmute(
+    target_end_date,
+    location = District,
+    value = Incidence_per_1k,
+    target_variable = "incidence",
+    model = "SARIMA"
+  )
+
+head(truth)
+
+```
+
+Get the Weighted Interval Scores (WIS) and Absolute Error of each forecast based on actual values.
+
+```{r}
+
+SARIMA_WIS_and_MAE<-covidHubUtils::score_forecasts(formatted_SARIMA_forecasts, truth)
+
+write.csv(SARIMA_WIS_and_MAE, "sarima_wis_and_mae.csv", row.names = FALSE)
+
+```
+
+```{r}
+
+forecast_plot_data <- formatted_SARIMA_forecasts %>%
+  filter(
+    model == "SARIMA",
+    type == "quantile",
+    quantile %in% c(0.025, 0.5, 0.975)
+  ) %>%
+  tidyr::pivot_wider(
+    names_from = quantile,
+    values_from = value
+  )
+
+plots <- forecast_plot_data %>%
+  split(.$location) %>%
+  lapply(function(df) {
+    
+    loc <- unique(df$location)
+    
+    truth_loc <- truth %>%
+      filter(location == loc)
+    
+    ggplot(df, aes(
+      x = target_end_date,
+      group = forecast_date
+    )) +
+      geom_ribbon(aes(
+        ymin = `0.025`,
+        ymax = `0.975`,
+        fill = as.factor(forecast_date)
+      ), alpha = 0.2, color = NA) +
+      geom_line(aes(
+        y = `0.5`,
+        color = as.factor(forecast_date)
+      )) +
+      geom_point(aes(
+        y = `0.5`,
+        color = as.factor(forecast_date)
+      )) +
+      geom_line(
+        data = truth_loc,
+        aes(
+          x = target_end_date,
+          y = value
+        ),
+        inherit.aes = FALSE,
+        color = "black",
+        linewidth = 1
+      ) +
+      geom_point(
+        data = truth_loc,
+        aes(
+          x = target_end_date,
+          y = value
+        ),
+        inherit.aes = FALSE,
+        color = "black",
+        size = 2
+      ) +
+      theme_minimal() +
+      labs(
+        x = "Target end date",
+        y = "Incidence per 1k",
+        color = "Forecast date",
+        fill = "Forecast date",
+        title = loc
+      )+ theme(legend.position = "none")
+  })
+
+plots
+```
