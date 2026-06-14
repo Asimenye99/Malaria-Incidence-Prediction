@@ -49,11 +49,13 @@ Scale exogenous variable data to include in the models
 
 ```{r}
 # Scale rainfall data
+correct_incidence_data$Precipitation <- scale(correct_incidence_data$Precipitation)
 correct_incidence_data$lag1_rainfall <- scale(correct_incidence_data$lag1_rainfall)
 correct_incidence_data$lag2_rainfall <- scale(correct_incidence_data$lag2_rainfall)
 correct_incidence_data$lag3_rainfall <- scale(correct_incidence_data$lag3_rainfall)
 
 # Scale temperature data
+correct_incidence_data$Temperature <- scale(correct_incidence_data$Temperature)
 correct_incidence_data$lag1_temperature <- scale(correct_incidence_data$lag1_temperature)
 correct_incidence_data$lag2_temperature <- scale(correct_incidence_data$lag2_temperature)
 correct_incidence_data$lag3_temperature <- scale(correct_incidence_data$lag3_temperature)
@@ -101,7 +103,7 @@ Get exogenous variables for forecasting
 T1_fut_exog <- lapply(
   districts_data_list,
   get_exog_variables,
-  variable = "lag1_temperature",
+  variable = "Temperature",
   lag = 1,
   n_windows = 19, 
   train_length = 60
@@ -109,13 +111,7 @@ T1_fut_exog <- lapply(
 
 ```
 
-!!!!!!!!!!!!!!!!!
-!!!!!!!!!!!!!!!!!
-
-understand this nested functions
-
-!!!!!!!!!!!!!!!!!
-!!!!!!!!!!!!!!!!!
+Forecasting with exogenous variables
 
 ```{r}
 
