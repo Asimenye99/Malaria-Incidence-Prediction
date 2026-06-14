@@ -1,0 +1,1475 @@
+
+---
+title: "Climatic Based Malaria Incidence Prediction in Malawi"
+author:
+  name: Doreen A. Ndovie, Dr Sureni Wickramasooria, Nicholas S. Adam PhD
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+link-citations: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Project Description
+
+Malaria remains one of the most persistent public health challenges in Malawi. Every year, thousands of people — especially children and pregnant women — are at risk of this deadly disease. This analysis aims to support predictive modelling of malaria outbreaks using ERA5 climate data, land cover classifications, and district-level malaria incidence records from 2015 to 2024. Specific objectives include:
+
+- Assessing and transforming climate and land cover data as required
+- Correlating land cover characteristics with total malaria incidence per district (2020 only)
+- Correlating ERA5 climate variables with malaria incidence using 1-, 2-, and 3-month lags
+- Exporting a clean, analysis-ready dataset with lagged climate features
+
+
+# Libraries
+
+```{r libraries}
+library(tidyverse)
+library(lubridate)
+library(broom)
+library(stringr)
+library(stringi)
+library(scales)
+library(patchwork)
+library(tseries)
+library(forecast)
+library(kableExtra)
+library(readxl)
+library(purrr)
+library(imputeTS)
+library(data.table)
+library(writexl)
+library(sf)
+library(corrr)
+library(corrplot)
+library(Hmisc)
+library(car)
+library(grid)
+library(terra)
+library(ggrepel)
+library(openxlsx)
+library(ggspatial)
+
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#ERA5 Climate Data
+
+The ERA5 dataset is already aggregated at district level and contains: district, date, temperature, precipitation, and wind. No spatial geolocating is required.
+
+Data source: ERA5 hourly data on single levels from 1940 to present. Copernicus Climate Change Service (C3S) Climate Data Store. Hersbach, H. et al. (2020). The ERA5 global reanalysis. Quarterly Journal of the Royal Meteorological Society, 146, 1999–2049. doi:10.1002/qj.3803. Accessed via the Copernicus Climate Data Store (CDS): https://cds.climate.copernicus.eu/. Variables used: 2-metre air temperature (°C), total precipitation (mm), and 10-metre wind speed (m/s), aggregated to district level using area-weighted spatial averaging over Malawi administrative boundaries (2015–2024).
+
+```{r}
+climate_raw <- read_csv("Malawi_district_climate_2015_2024.csv")
+
+glimpse(climate_raw)
+```
+
+```{r}
+landcover_df <- read_csv("landcover.csv")
+
+glimpse(landcover_df)
+head(landcover_df)
+```
+
+#Malaria Incidence Data
+The malaria incidence data is read from malaria_incidence_cleaned.csv, which contains district-level monthly case counts with columns: District, Month, Year, Cases.
+
+```{r}
+malaria_raw <- read_csv("malaria_incidence_cleaned.csv")
+
+# Standardise column names to lowercase
+names(malaria_raw) <- tolower(names(malaria_raw))
+
+# Rename 'cases' to 'incidence' for consistency with downstream code
+malaria_raw <- malaria_raw %>%
+  rename(incidence = cases)
+
+glimpse(malaria_raw)
+head(malaria_raw)
+```
+
+#Population Data (NSO - Cleaning)
+
+```{r}
+pop_dat <- read_csv("MR DATA - District Populations.csv")
+
+pop_tot <- pop_dat %>%
+  rename(AgeGroup = 2) %>%
+  filter(AgeGroup == "Total") %>%
+  filter(!is.na(District))
+
+# Rename the repeating triplets: 2018_both, 2018_male, 2018_female
+yrs <- 2015:2024
+nm  <- names(pop_tot)
+
+year_pos <- which(nm %in% as.character(yrs))
+
+for (y in yrs) {
+  i <- which(nm == as.character(y))
+  if (length(i) == 1) {
+    nm[i]     <- paste0(y, "_both")
+    if (i + 1 <= length(nm)) nm[i + 1] <- paste0(y, "_male")
+    if (i + 2 <= length(nm)) nm[i + 2] <- paste0(y, "_female")
+  }
+}
+names(pop_tot) <- nm
+
+wanted <- c("District",
+            as.vector(rbind(paste0(yrs, "_both"),
+                            paste0(yrs, "_male"),
+                            paste0(yrs, "_female"))))
+wanted <- intersect(wanted, names(pop_tot))
+
+pop_long <- pop_tot %>%
+  select(all_of(wanted)) %>%
+  pivot_longer(
+    cols      = -District,
+    names_to  = c("Year", "Sex"),
+    names_sep = "_",
+    values_to = "Population"
+  ) %>%
+  mutate(
+    Year       = as.integer(Year),
+    Sex        = factor(Sex, levels = c("both", "male", "female"),
+                        labels = c("Both", "Male", "Female")),
+    Population = parse_number(Population)
+  ) %>%
+  arrange(District, Year, Sex)
+
+pop_long_all <- pop_long %>% filter(Year %in% 2015:2024)
+
+pop_both_combined <- pop_long_all %>%
+  mutate(
+    District_clean = str_replace(District, "\\s+(City|Rural)$", ""),
+    District_clean = str_squish(District_clean),
+    District_clean = case_when(
+      District_clean == "Chiradzulo" ~ "Chiradzulu",
+      TRUE ~ District_clean
+    )
+  ) %>%
+  filter(Sex == "Both") %>%
+  group_by(District_clean, Year) %>%
+  summarise(Population = sum(Population, na.rm = TRUE), .groups = "drop") %>%
+  arrange(District_clean, Year) %>%
+  mutate(District_clean = District_clean %>%
+           stringr::str_replace_all("[^[:alnum:] ]", "") %>%
+           stringr::str_squish())
+```
+
+
+#Climate Data Cleaning
+Filter to Study Period (2015–2024) and Aggregate Monthly
+
+```{r}
+climate_filtered <- climate_raw %>%
+  mutate(date = as.Date(date)) %>%
+  filter(date >= as.Date("2015-01-01"),
+         date <= as.Date("2024-12-31"))
+
+climate_monthly <- climate_filtered %>%
+  mutate(
+    year  = lubridate::year(date),
+    month = lubridate::month(date, label = TRUE, abbr = TRUE)
+  ) %>%
+  group_by(district, year, month) %>%
+  summarise(
+    wind          = mean(wind,         na.rm = TRUE),
+    temperature   = mean(temperature,  na.rm = TRUE),
+    precipitation = sum(precipitation, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+head(climate_monthly)
+```
+
+#Final Climate Data Preparation
+Standardise district names, convert abbreviated month labels to full names, and construct a proper monthly date column.
+
+```{r}
+climate_df <- climate_monthly %>%
+  mutate(
+    district = case_when(
+      tolower(district) %in% c("lilongwe city", "lilongwe city council") ~ "Lilongwe",
+      tolower(district) == "nkhata bay" ~ "Nkhatabay",
+      TRUE ~ district
+    ),
+    month = factor(
+      month,
+      levels = month.abb,
+      labels = month.name
+    ),
+    month_num = match(as.character(month), month.name),
+    date      = as.Date(paste(year, month_num, "01", sep = "-"))
+  )
+
+head(climate_df)
+unique(climate_df$district)
+```
+
+#Check Distributions and Apply Transformations
+
+```{r}
+climate_df %>%
+  select(precipitation, temperature, wind) %>%
+  summary()
+
+hist(
+  climate_df$precipitation,
+  main   = "Precipitation Distribution (raw)",
+  xlab   = "Precipitation (mm)",
+  col    = "steelblue",
+  breaks = 30
+)
+
+climate_df <- climate_df %>%
+  mutate(log_precipitation = log1p(precipitation))
+
+hist(
+  climate_df$log_precipitation,
+  main   = "Precipitation Distribution (log1p transformed)",
+  xlab   = "log(Precipitation + 1)",
+  col    = "steelblue",
+  breaks = 30
+)
+
+hist(
+  climate_df$temperature,
+  main   = "Temperature Distribution",
+  xlab   = "Temperature (°C)",
+  col    = "tomato",
+  breaks = 30
+)
+
+hist(
+  climate_df$wind,
+  main   = "Wind Speed Distribution",
+  xlab   = "Wind Speed (m/s)",
+  col    = "darkseagreen",
+  breaks = 30
+)
+```
+
+#Climate Trends per District (2015–2024)
+
+```{r}
+climate_long <- climate_df %>%
+  select(district, date, precipitation, temperature, wind) %>%
+  pivot_longer(
+    cols      = c(precipitation, temperature, wind),
+    names_to  = "variable",
+    values_to = "value"
+  )
+
+full_grid <- expand.grid(
+  date     = seq(as.Date("2015-01-01"), as.Date("2024-12-01"), by = "month"),
+  district = unique(climate_long$district),
+  stringsAsFactors = FALSE
+)
+
+climate_long <- full_grid %>%
+  left_join(climate_long, by = c("date", "district"))
+
+year_start_dates <- unique(climate_long$date[format(climate_long$date, "%m") == "01"])
+
+base_dir <- "climate_plots_by_district"
+dir.create(base_dir, showWarnings = FALSE)
+
+for (d in unique(climate_long$district)) {
+  district_dir  <- file.path(base_dir, d)
+  dir.create(district_dir, showWarnings = FALSE)
+  district_data <- filter(climate_long, district == d)
+
+  p <- ggplot(district_data, aes(x = date, y = value)) +
+    geom_smooth(method = "loess", span = 0.25, se = FALSE,
+                color = "steelblue", linewidth = 1.1, na.rm = TRUE) +
+    geom_vline(xintercept = as.numeric(year_start_dates),
+               color = "grey70", linetype = "dashed", linewidth = 0.5) +
+    scale_x_date(date_labels = "%b", date_breaks = "1 month",
+                 limits = c(as.Date("2015-01-01"), as.Date("2024-12-01"))) +
+    facet_wrap(~variable, scales = "free_y", ncol = 1) +
+    theme_minimal() +
+    theme(
+      axis.text.x      = element_text(angle = 60, hjust = 1, size = 7),
+      strip.text       = element_text(face = "bold", size = 12),
+      panel.spacing    = unit(1.6, "lines"),
+      panel.grid.minor = element_blank()
+    ) +
+    labs(title = NULL, x = NULL, y = NULL)
+
+  ggsave(
+    filename = file.path(district_dir, paste0("climate_trends_", d, ".pdf")),
+    plot = p, width = 12, height = 16
+  )
+}
+
+message("Climate trend plots saved to: ", base_dir)
+```
+
+
+#Landcover Data Cleaning
+
+```{r}
+landcover_df <- landcover_df %>%
+  rename_with(tolower) %>%
+  mutate(district = str_to_title(str_trim(district)))
+
+cat("Missing values per column:\n")
+print(colSums(is.na(landcover_df)))
+
+landcover_vars <- landcover_df %>%
+  select(where(is.numeric)) %>%
+  names()
+
+cat("\nLand cover variables detected:\n")
+print(landcover_vars)
+
+landcover_df %>%
+  select(all_of(landcover_vars)) %>%
+  summary()
+
+par(mfrow = c(ceiling(length(landcover_vars) / 3), 3), mar = c(4, 4, 2, 1))
+for (v in landcover_vars) {
+  hist(landcover_df[[v]], main = v, xlab = v, col = "darkseagreen", breaks = 15)
+}
+par(mfrow = c(1, 1))
+
+cat("\nLand cover districts:\n")
+print(unique(landcover_df$district))
+```
+
+
+#Malaria Data Cleaning
+Harmonise District Names and Clean
+
+
+```{r}
+malaria_df <- malaria_raw %>%
+  # Step 1: strip -DHO and normalise whitespace/case for safe matching
+  mutate(
+    district_raw = district %>%
+      stringr::str_remove("-DHO$") %>%
+      stringr::str_squish(),
+    district = case_when(
+      str_detect(tolower(district_raw), "nkhata")   ~ "Nkhatabay",
+      str_detect(tolower(district_raw), "mzimba")   ~ "Mzimba",   # catches North, South, plain
+      str_detect(tolower(district_raw), "mzuzu")    ~ "Mzimba",
+      TRUE ~ district_raw %>%
+               stringr::str_remove_all("[^[:alnum:] ]") %>%
+               stringr::str_squish()
+    )
+  ) %>%
+  select(-district_raw) %>%
+  mutate(
+    year  = as.integer(year),
+    month = factor(month, levels = c("January","February","March","April",
+                                     "May","June","July","August","September",
+                                     "October","November","December"))
+  ) %>%
+  filter(year >= 2015, year <= 2024)
+
+cat("Unique districts after cleaning:\n")
+print(sort(unique(malaria_df$district)))
+```
+
+#Attach Population and Compute Incidence per 1,000
+
+```{r}
+malaria_with_pop <- malaria_df %>%
+  left_join(
+    pop_both_combined,
+    by = c("district" = "District_clean", "year" = "Year")
+  ) %>%
+  mutate(incidence_per_1k = (incidence / Population) * 1000)
+
+glimpse(malaria_with_pop)
+```
+
+
+#Create Date Column
+
+```{r}
+malaria_with_pop <- malaria_with_pop %>%
+  mutate(
+    month_num = match(tolower(trimws(as.character(month))), tolower(month.name)),
+    date      = as.Date(paste(year, month_num, "01", sep = "-"))
+  ) %>%
+  filter(year >= 2015 & year <= 2024)
+```
+
+#Data Merging
+Aggregate Malaria to District-Month Level
+
+```{r}
+district_monthly <- malaria_with_pop %>%
+  group_by(district, year, month, date) %>%
+  summarise(
+    total_cases      = sum(incidence,   na.rm = TRUE),
+    total_population = mean(Population, na.rm = TRUE),
+    incidence_per_1k = (total_cases / total_population) * 1000,
+    .groups = "drop"
+  )
+
+head(district_monthly)
+```
+
+
+#Merge Climate and Malaria Data
+
+```{r}
+climate_df$month       <- as.character(climate_df$month)
+district_monthly$month <- as.character(district_monthly$month)
+
+merged_df <- district_monthly %>%
+  left_join(
+    climate_df %>% mutate(year = as.numeric(as.character(year))),
+    by = c("district", "date", "year", "month")
+  )
+
+head(merged_df)
+
+cat("Rows in merged_df:", nrow(merged_df), "\n")
+cat("NAs in precipitation:", sum(is.na(merged_df$precipitation)), "\n")
+cat("NAs in temperature:",   sum(is.na(merged_df$temperature)),   "\n")
+cat("NAs in wind:",          sum(is.na(merged_df$wind)),          "\n")
+```
+
+
+#Merge Land Cover Data (2020 Only for Correlation)
+
+```{r}
+# For land cover correlations, use 2020 malaria incidence data only
+malaria_2020 <- district_monthly %>%
+  filter(year == 2020) %>%
+  group_by(district) %>%
+  summarise(
+    total_incidence_2020  = sum(total_cases,       na.rm = TRUE),
+    avg_incidence_1k_2020 = mean(incidence_per_1k, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+landcover_malaria_2020 <- malaria_2020 %>%
+  left_join(landcover_df, by = "district")
+
+cat("Districts with land cover data (2020):", sum(!is.na(landcover_malaria_2020[[landcover_vars[1]]])), "\n")
+head(landcover_malaria_2020)
+```
+
+
+#Correlation Analysis
+Helper Functions
+
+```{r}
+# Safe Pearson correlation returning a tibble
+cor_test_safe <- function(x, y) {
+  tryCatch({
+    res <- cor.test(x, y, method = "pearson")
+    tibble(correlation = unname(res$estimate), p_value = res$p.value)
+  }, error = function(e) tibble(correlation = NA_real_, p_value = NA_real_))
+}
+
+# P-value to significance stars
+p_to_stars <- function(p) {
+  case_when(
+    is.na(p)  ~ "",
+    p < 0.001 ~ "***",
+    p < 0.01  ~ "**",
+    p < 0.05  ~ "*",
+    p < 0.1   ~ ".",
+    TRUE      ~ ""
+  )
+}
+```
+
+#Land Cover vs Total Malaria Incidence per District (2020 Only)
+
+```{r}
+lc_cor_results <- map_dfr(landcover_vars, function(v) {
+  cor_test_safe(landcover_malaria_2020[[v]], landcover_malaria_2020$total_incidence_2020) %>%
+    mutate(variable = v)
+}) %>%
+  arrange(p_value) %>%
+  mutate(
+    significance = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      p_value < 0.1   ~ ".",
+      TRUE            ~ "ns"
+    )
+  ) %>%
+  select(variable, correlation, p_value, significance)
+
+kable(lc_cor_results,
+      caption = "Pearson Correlations: Land Cover Class vs Total Malaria Incidence (2020)",
+      digits  = 3) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+
+#Land Cover vs Average Incidence per 1,000 (2020 Only)
+
+```{r}
+lc_cor_1k <- map_dfr(landcover_vars, function(v) {
+  cor_test_safe(landcover_malaria_2020[[v]], landcover_malaria_2020$avg_incidence_1k_2020) %>%
+    mutate(variable = v)
+}) %>%
+  arrange(p_value) %>%
+  mutate(
+    significance = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      p_value < 0.1   ~ ".",
+      TRUE            ~ "ns"
+    )
+  ) %>%
+  select(variable, correlation, p_value, significance)
+
+kable(lc_cor_1k,
+      caption = "Pearson Correlations: Land Cover Class vs Average Incidence per 1,000 (2020)",
+      digits  = 3) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+
+#Climate Variables vs Malaria Incidence (No Lag)
+
+```{r}
+climate_vars <- c("precipitation", "temperature", "wind")
+
+combined_df <- merged_df %>%
+  rename(`Malaria incidence` = incidence_per_1k) %>%
+  mutate(across(everything(), ~ replace(., is.infinite(.), NA)))
+
+correlation_per_district <- combined_df %>%
+  group_by(district) %>%
+  summarise(
+    across(
+      all_of(climate_vars),
+      ~ list(cor_test_safe(`Malaria incidence`, .x))
+    ),
+    .groups = "drop"
+  )
+
+cor_long <- correlation_per_district %>%
+  pivot_longer(
+    cols      = all_of(climate_vars),
+    names_to  = "climate_variable",
+    values_to = "result"
+  ) %>%
+  unnest(result) %>%
+  mutate(stars = p_to_stars(p_value))
+```
+
+
+#Climate Variables vs Malaria Incidence (1-, 2-, and 3-Month Lags)
+
+```{r}
+lagged_df <- combined_df %>%
+  group_by(district) %>%
+  arrange(date, .by_group = TRUE) %>%
+  mutate(across(
+    all_of(climate_vars),
+    list(
+      lag1 = ~ lag(.x, 1),
+      lag2 = ~ lag(.x, 2),
+      lag3 = ~ lag(.x, 3)
+    ),
+    .names = "{.col}_{.fn}"
+  )) %>%
+  ungroup()
+
+climate_lag_vars <- grep(
+  paste0("(", paste(climate_vars, collapse = "|"), ")_(lag1|lag2|lag3)"),
+  names(lagged_df), value = TRUE
+)
+
+correlation_lags <- lagged_df %>%
+  group_by(district) %>%
+  summarise(
+    across(
+      all_of(climate_lag_vars),
+      ~ list(cor_test_safe(`Malaria incidence`, .x)),
+      .names = "{.col}"
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(across(all_of(climate_lag_vars), ~ map_dfr(.x, ~.x))) %>%
+  unnest(cols = everything(), names_sep = "_")
+
+cor_long_lags <- correlation_lags %>%
+  pivot_longer(
+    cols          = matches("_(lag[123])_"),
+    names_to      = c("climate_variable", "lag", ".value"),
+    names_pattern = "(.*)_(lag[123])_(.*)"
+  ) %>%
+  filter(!is.na(correlation)) %>%
+  mutate(
+    stars = p_to_stars(p_value),
+    lag   = factor(lag,
+                   levels = c("lag1", "lag2", "lag3"),
+                   labels = c("1-Month Lag", "2-Month Lag", "3-Month Lag"))
+  )
+
+kable(cor_long_lags %>% arrange(district, climate_variable, lag),
+      caption = "Climate–Malaria Correlations per District (1-, 2-, and 3-Month Lags)",
+      digits  = 3) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"))
+```
+
+#Visualization
+Malaria Incidence Over Time (2015–2024)
+
+```{r}
+malaria_monthly_max <- malaria_with_pop %>%
+  group_by(date) %>%
+  summarise(max_incidence = max(incidence, na.rm = TRUE), .groups = "drop")
+
+full_dates <- data.frame(
+  date = seq(as.Date("2015-01-01"), as.Date("2024-12-01"), by = "month")
+)
+
+malaria_monthly_max <- full_dates %>%
+  left_join(malaria_monthly_max, by = "date") %>%
+  mutate(month_label = format(date, "%b"))
+
+year_start_dates <- malaria_monthly_max$date[format(malaria_monthly_max$date, "%m") == "01"]
+
+ggplot(malaria_monthly_max, aes(x = date, y = max_incidence)) +
+  geom_line(color = "darkred", linewidth = 1.2, na.rm = TRUE) +
+  geom_point(color = "darkred", size = 1.8, na.rm = TRUE) +
+  geom_vline(xintercept = as.numeric(year_start_dates),
+             color = "grey50", linetype = "dashed") +
+  scale_x_date(breaks = malaria_monthly_max$date,
+               labels = malaria_monthly_max$month_label,
+               limits = c(as.Date("2015-01-01"), as.Date("2024-12-01"))) +
+  annotate("text", x = year_start_dates,
+           y     = max(malaria_monthly_max$max_incidence, na.rm = TRUE) * 1.05,
+           label = format(year_start_dates, "%Y"),
+           vjust = 0, hjust = 0.5, size = 3.5) +
+  expand_limits(y = max(malaria_monthly_max$max_incidence, na.rm = TRUE) * 1.1) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1, size = 5)) +
+  labs(title = NULL, x = NULL, y = "Incidence per 1,000")
+
+ggsave("incidence_time_series.pdf", width = 13, height = 5)
+```
+
+
+```{r}
+# Diagnostic: check which districts have missing population
+district_monthly %>%
+  filter(is.na(total_population) | total_population == 0) %>%
+  distinct(district)
+
+# Diagnostic: compare your rates vs expected
+district_monthly %>%
+  filter(year >= 2015) %>%
+  group_by(district) %>%
+  summarise(
+    mean_pop      = mean(total_population, na.rm = TRUE),
+    mean_cases    = mean(total_cases,      na.rm = TRUE),
+    mean_per_1k   = mean(incidence_per_1k, na.rm = TRUE),
+    n_missing_pop = sum(is.na(total_population)),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_per_1k)) %>%
+  print(n = 30)
+```
+
+#Average Incidence per District (Ranked Bar Chart) - 2015-2024
+
+```{r}
+district_summary <- district_monthly %>%
+  filter(year >= 2015, year <= 2024) %>%
+  group_by(district) %>%
+  summarise(
+    mean_incidence_per_1k   = mean(incidence_per_1k,   na.rm = TRUE),
+    median_incidence_per_1k = median(incidence_per_1k, na.rm = TRUE),
+    max_incidence_per_1k    = max(incidence_per_1k,    na.rm = TRUE),
+    total_cases             = sum(total_cases,          na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(mean_incidence_per_1k))
+
+print(district_summary)
+
+ggplot(
+  district_summary,
+  aes(x = reorder(district, mean_incidence_per_1k), y = mean_incidence_per_1k)
+) +
+  geom_col(fill = "steelblue") +
+  geom_text(
+    aes(label = round(mean_incidence_per_1k, 1)),
+    hjust = -0.1, size = 3
+  ) +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.12))) +
+  labs(
+    title = NULL,
+    x     = NULL,
+    y     = "Mean Monthly Incidence per 1,000"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold", hjust = 0.5))
+
+ggsave("district_rank_bar.pdf", width = 10, height = 7)
+```
+
+
+#Monthly Incidence Heatmap per District (2015-2024)
+
+```{r}
+monthly_district_norm <- malaria_with_pop %>%
+  mutate(month = factor(month, levels = month.name)) %>%
+  group_by(district, month) %>%
+  summarise(Incidence_per_1k = mean(incidence_per_1k, na.rm = TRUE), .groups = "drop")
+
+ggplot(monthly_district_norm, aes(x = month, y = district, fill = Incidence_per_1k)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightyellow", high = "steelblue",
+                      name = "Incidence\n(per 1,000)") +
+  labs(title = NULL, x = NULL, y = NULL) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    axis.text.y = element_text(size = 8),
+    plot.title  = element_text(face = "bold", size = 14, hjust = 0.5)
+  )
+
+ggsave("monthly_incidence_heatmap.pdf", width = 14, height = 10)
+```
+
+#Annual Incidence per District Heatmap (2015-2024)
+
+```{r}
+yearly_district <- malaria_with_pop %>%
+  group_by(district, year) %>%
+  summarise(Total_Incidence = sum(incidence_per_1k, na.rm = TRUE), .groups = "drop") %>%
+  mutate(year = factor(year, levels = 2015:2024))
+
+ggplot(yearly_district, aes(x = year, y = district, fill = Total_Incidence)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "lightyellow", high = "steelblue") +
+  labs(title = NULL, x = NULL, y = NULL, fill = "Incidence") +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.y = element_text(size = 8),
+    plot.title  = element_text(face = "bold", size = 10, hjust = 0.5)
+  )
+
+ggsave("annual_incidence_heatmap.pdf", width = 10, height = 7)
+```
+
+#Choropleth Maps of Malaria Incidence by Year (2015-2024)
+
+```{r}
+# Load shapefile
+districts <- st_read("mwi_adm_nso_hotosm_20230405_shp/mwi_admbnda_adm2_nso_hotosm_20230405.shp")
+
+# Verify
+st_crs(districts)
+print(names(districts))
+print(head(districts$ADM2_EN))
+
+# Check name alignment
+cat("\nDistricts in shapefile but NOT in malaria data:\n")
+print(setdiff(districts$ADM2_EN, unique(malaria_with_pop$district)))
+
+cat("\nDistricts in malaria data but NOT in shapefile:\n")
+print(setdiff(unique(malaria_with_pop$district), districts$ADM2_EN))
+
+# Map
+districts_sf_map <- st_as_sf(districts)
+
+malaria_agg <- malaria_with_pop %>%
+  filter(year >= 2015, year <= 2024) %>%
+  group_by(district, year) %>%
+  summarise(total_incidence = sum(incidence_per_1k, na.rm = TRUE), .groups = "drop")
+
+malaria_map_data <- districts_sf_map %>%
+  left_join(malaria_agg, by = c("ADM2_EN" = "district")) %>%
+  filter(!is.na(total_incidence))
+
+# Compute district centroids for labels — recode city entries to match district names
+district_centroids <- districts_sf_map %>%
+  st_centroid() %>%
+  mutate(
+    lon        = st_coordinates(.)[, 1],
+    lat        = st_coordinates(.)[, 2],
+    label_name = case_when(
+      str_detect(tolower(ADM2_EN), "mzuzu")         ~ "Mzimba",
+      str_detect(tolower(ADM2_EN), "lilongwe city") ~ "Lilongwe",
+      TRUE ~ ADM2_EN
+    )
+  )
+
+# Bounding box for arrow/scale placement
+bbox <- st_bbox(districts_sf_map)
+
+# Yearly choropleth — one facet per year, with North arrow and source caption
+choropleth_map <- ggplot(malaria_map_data) +
+  geom_sf(aes(fill = total_incidence), color = "black", linewidth = 0.2) +
+  geom_sf_text(
+    data = district_centroids,
+    aes(label = label_name),
+    size = 2.8,
+    fontface = "bold",
+    color = "black",
+    check_overlap = TRUE
+  ) +
+  scale_fill_gradient(low = "#FFF7BC", high = "#D95F0E", name = "Incidence\nper 1,000") +
+  facet_wrap(~year, ncol = 4) +
+  annotation_north_arrow(
+    location = "br",
+    which_north = "true",
+    style = north_arrow_fancy_orienteering(
+      fill      = c("black", "white"),
+      text_size = 3
+    ),
+    height = unit(1.2, "cm"),
+    width  = unit(1.2, "cm")
+  ) +
+  annotation_scale(
+    location = "bl",
+    width_hint = 0.25,
+    text_cex   = 0.75
+  ) +
+  theme_minimal(base_size = 11) +
+  labs(
+    title   = NULL,
+    x       = NULL,
+    y       = NULL,
+    caption = "Source: Malawi shapefiles — Humanitarian Data Exchange (HDX) / HOT-OSM / NSO, 2023"
+  ) +
+  theme(
+    axis.text       = element_blank(),
+    axis.ticks      = element_blank(),
+    panel.grid      = element_blank(),
+    strip.text      = element_text(face = "bold", size = 12),
+    plot.caption    = element_text(size = 8, hjust = 0),
+    legend.text     = element_text(size = 9),
+    legend.title    = element_text(size = 10)
+  )
+
+choropleth_map
+
+# Save as PDF
+ggsave(
+  "choropleth_annual_malaria_incidence.pdf",
+  plot = choropleth_map,
+  width = 16, height = 12
+)
+```
+
+#Full Malawi Map (Descriptive Overview)
+
+```{r}
+# Step 1: Assign a single district name to every polygon, merging city polygons
+#   into their parent district (Mzuzu City → Mzimba; Lilongwe City → Lilongwe)
+districts_merged <- districts_sf_map %>%
+  mutate(
+    district_name = case_when(
+      str_detect(tolower(ADM2_EN), "mzuzu")         ~ "Mzimba",
+      str_detect(tolower(ADM2_EN), "lilongwe city") ~ "Lilongwe",
+      TRUE ~ ADM2_EN
+    )
+  ) %>%
+  group_by(district_name) %>%
+  summarise(geometry = st_union(geometry), .groups = "drop")
+
+# Step 2: One centroid per merged district → one label each
+district_centroids_full <- districts_merged %>%
+  st_centroid() %>%
+  mutate(
+    lon  = st_coordinates(.)[, 1],
+    lat  = st_coordinates(.)[, 2],
+    name = district_name
+  )
+
+# Malawi country bounding box approx dimensions:
+# Width ~560 km (N–S ~900 km), Lake Malawi ~580 km long, ~50 km wide
+malawi_overview <- ggplot(districts_sf_map) +
+  geom_sf(fill = "#f5f0e8", color = "grey40", linewidth = 0.4) +
+  geom_sf_text(
+    data = district_centroids_full,
+    aes(label = name),
+    size  = 3.5,
+    fontface = "bold",
+    color = "black",
+    check_overlap = TRUE
+  ) +
+  annotation_north_arrow(
+    location    = "tr",
+    which_north = "true",
+    style = north_arrow_fancy_orienteering(
+      fill      = c("black", "white"),
+      text_size = 10
+    ),
+    height = unit(1.5, "cm"),
+    width  = unit(1.5, "cm")
+  ) +
+  annotation_scale(
+    location   = "bl",
+    width_hint = 0.3,
+    text_cex   = 0.85
+  ) +
+  # Add Lake Malawi annotation (positioned at approximate lake centroid)
+  annotate(
+    "text",
+    x = 34.5, y = -12.0,
+    label = "Lake Malawi\n(~580 km long\n~50 km wide)",
+    size = 3.2, color = "#2166ac", fontface = "italic",
+    hjust = 0.5
+  ) +
+  theme_minimal(base_size = 12) +
+  labs(
+    title   = NULL,
+    x       = NULL,
+    y       = NULL,
+    caption = "Source: Malawi shapefiles — Humanitarian Data Exchange (HDX) / HOT-OSM / NSO, 2023"
+  ) +
+  theme(
+    axis.text    = element_blank(),
+    axis.ticks   = element_blank(),
+    panel.grid   = element_blank(),
+    plot.caption = element_text(size = 8, hjust = 0)
+  )
+
+malawi_overview
+
+# Save as PDF
+ggsave(
+  "malawi_districts_overview_map.pdf",
+  plot = malawi_overview,
+  width = 8, height = 12
+)
+```
+
+#Land Cover Correlation Plots (2020 Data)
+Significance Bar Chart — Land Cover vs Total Incidence (2020)
+
+```{r}
+lc_cor_results %>%
+  filter(!is.na(correlation)) %>%
+  mutate(
+    variable  = fct_reorder(variable, correlation),
+    variable  = factor(
+      paste0(toupper(substr(as.character(variable), 1, 1)),
+             substr(as.character(variable), 2, nchar(as.character(variable)))),
+      levels = paste0(toupper(substr(levels(fct_reorder(variable, correlation)), 1, 1)),
+                      substr(levels(fct_reorder(variable, correlation)), 2,
+                             nchar(levels(fct_reorder(variable, correlation)))))
+    ),
+    direction = ifelse(correlation > 0, "Positive", "Negative")
+  ) %>%
+  ggplot(aes(x = variable, y = correlation, fill = direction)) +
+  geom_col() +
+  geom_text(
+    aes(label = significance,
+        y = correlation + ifelse(correlation >= 0, 0.03, -0.03)),
+    size = 5, fontface = "bold"
+  ) +
+  geom_hline(yintercept = 0, linewidth = 0.6) +
+  scale_fill_manual(values = c("Positive" = "#D7191C", "Negative" = "#2C7BB6")) +
+  coord_flip() +
+  labs(
+    title    = NULL,
+    subtitle = "Significance: *** p<0.001  ** p<0.01  * p<0.05  . p<0.1  ns",
+    x        = NULL,
+    y        = "Pearson r",
+    fill     = "Direction"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_blank())
+
+ggsave("lc_significance_bar.pdf", width = 10, height = 6)
+```
+
+
+#Significant Land Cover Classes — Ranked Dot Plot (2020)
+
+```{r}
+lc_cor_results %>%
+  filter(significance != "ns", !is.na(correlation)) %>%
+  mutate(variable = fct_reorder(variable, correlation)) %>%
+  ggplot(aes(x = correlation, y = variable,
+             color = significance, size = abs(correlation))) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+  geom_point() +
+  geom_text(aes(label = significance), nudge_y = 0.35, size = 4.5, fontface = "bold") +
+  scale_color_manual(values = c("***" = "#D7191C", "**" = "#E85D04",
+                                 "*"  = "#F4A261", "."  = "#A8DADC")) +
+  scale_size_continuous(range = c(3, 8), guide = "none") +
+  labs(
+    title    = NULL,
+    subtitle = "Only p < 0.1 shown. Point size ∝ |r|.",
+    x        = "Pearson r",
+    y        = NULL,
+    color    = "Significance"
+  ) +
+  theme_minimal(base_size = 12)
+
+ggsave("lc_dotplot_significant.pdf", width = 9, height = 5)
+```
+
+#Land Cover vs Total Incidence — Scatter Plots (2020)
+```{r}
+lc_sig_labels <- lc_cor_results %>%
+  select(variable, significance, correlation) %>%
+  rename(land_cover_class = variable)
+
+lc_long_total <- landcover_malaria_2020 %>%
+  pivot_longer(cols = all_of(landcover_vars),
+               names_to  = "land_cover_class",
+               values_to = "cover_value") %>%
+  left_join(lc_sig_labels, by = "land_cover_class") %>%
+  mutate(
+    # Capitalise first letter of land cover class name
+    lc_label   = paste0(
+      toupper(substr(land_cover_class, 1, 1)),
+      substr(land_cover_class, 2, nchar(land_cover_class))
+    ),
+    facet_label = paste0(lc_label,
+                         " (r=", round(correlation, 2), " ", significance, ")")
+  )
+
+ggplot(lc_long_total, aes(x = cover_value, y = total_incidence_2020)) +
+  geom_point(aes(color = significance), alpha = 0.8, size = 2.5) +
+  geom_smooth(method = "lm", aes(fill = significance), se = TRUE, linewidth = 0.8) +
+  geom_text_repel(aes(label = district), size = 2.5, max.overlaps = 6, color = "grey40") +
+  scale_color_manual(values = c("***" = "#D7191C", "**" = "#E85D04",
+                                 "*"  = "#F4A261", "."  = "#A8DADC", "ns" = "grey70")) +
+  scale_fill_manual(values = c("***" = "#D7191C", "**" = "#E85D04",
+                                "*"  = "#F4A261", "."  = "#A8DADC", "ns" = "grey70")) +
+  facet_wrap(~facet_label, scales = "free_x") +
+  labs(
+    title    = NULL,
+    subtitle = NULL,
+    x        = "Land Cover Proportion",
+    y        = "Total Malaria Incidence (2020)",
+    color    = "Significance",
+    fill     = "Significance"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    strip.text        = element_text(face = "bold", size = 9),
+    strip.placement   = "outside",
+    strip.background  = element_rect(color = "black", fill = "grey95", linewidth = 0.6),
+    panel.border      = element_rect(color = "black", fill = NA, linewidth = 0.5),
+    legend.position   = "bottom",
+    axis.text         = element_text(size = 9)
+  )
+
+ggsave("lc_scatter_total_incidence.pdf", width = 13, height = 10)
+```
+
+
+#Land Cover vs Average Incidence per 1,000 (2020) - REDONE without equations
+
+
+```{r}
+lc_sig_labels_1k <- lc_cor_1k %>%
+  select(variable, significance, correlation) %>%
+  rename(land_cover_class = variable)
+
+lc_long_1k <- landcover_malaria_2020 %>%
+  pivot_longer(cols = all_of(landcover_vars),
+               names_to  = "land_cover_class",
+               values_to = "cover_value") %>%
+  left_join(lc_sig_labels_1k, by = "land_cover_class") %>%
+  mutate(
+    lc_label   = paste0(
+      toupper(substr(land_cover_class, 1, 1)),
+      substr(land_cover_class, 2, nchar(land_cover_class))
+    ),
+    facet_label = paste0(lc_label,
+                         " (r=", round(correlation, 2), " ", significance, ")")
+  )
+
+ggplot(lc_long_1k, aes(x = cover_value, y = avg_incidence_1k_2020)) +
+  geom_point(aes(color = significance), alpha = 0.7, size = 2.5) +
+  geom_smooth(method = "lm", aes(fill = significance), se = TRUE, linewidth = 0.8, alpha = 0.3) +
+  geom_text_repel(aes(label = district), size = 2.5, max.overlaps = 6, color = "grey30") +
+  scale_color_manual(values = c("***" = "#D7191C", "**" = "#E85D04",
+                                 "*"  = "#F4A261", "."  = "#A8DADC", "ns" = "grey60")) +
+  scale_fill_manual(values = c("***" = "#D7191C", "**" = "#E85D04",
+                                "*"  = "#F4A261", "."  = "#A8DADC", "ns" = "grey80")) +
+  facet_wrap(~facet_label, scales = "free_x") +
+  labs(
+    title    = NULL,
+    subtitle = "Land cover vs. average incidence per 1,000 population (2020)",
+    x        = "Land Cover Proportion",
+    y        = "Average Incidence per 1,000",
+    color    = "Significance",
+    fill     = "Significance"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    strip.text        = element_text(face = "bold", size = 9),
+    strip.placement   = "outside",
+    strip.background  = element_rect(color = "black", fill = "grey95", linewidth = 0.6),
+    panel.border      = element_rect(color = "black", fill = NA, linewidth = 0.5),
+    legend.position   = "bottom",
+    axis.text         = element_text(size = 9)
+  )
+
+ggsave("lc_scatter_avg_incidence_1k.pdf", width = 13, height = 10)
+```
+
+#Land Cover–Incidence Correlation Heatmap by District (2020)
+
+```{r}
+lc_dist_cor <- map_dfr(landcover_vars, function(v) {
+  tibble(
+    land_cover = v,
+    district   = landcover_malaria_2020$district,
+    lc_value   = landcover_malaria_2020[[v]],
+    incidence  = landcover_malaria_2020$total_incidence_2020
+  )
+}) %>%
+  filter(!is.na(lc_value), !is.na(incidence))
+
+lc_dist_heat <- lc_dist_cor %>%
+  left_join(
+    lc_cor_results %>% rename(land_cover = variable),
+    by = "land_cover"
+  ) %>%
+  mutate(stars = p_to_stars(p_value))
+
+lc_dist_heat_plot <- lc_dist_heat %>%
+  mutate(
+    land_cover = paste0(
+      toupper(substr(land_cover, 1, 1)),
+      substr(land_cover, 2, nchar(land_cover))
+    )
+  )
+
+ggplot(lc_dist_heat_plot, aes(x = land_cover, y = district, fill = correlation)) +
+  geom_tile(color = "white", linewidth = 0.4) +
+  geom_text(aes(label = stars), color = "black", size = 3.5, fontface = "bold") +
+  scale_fill_gradient2(
+    low = "#2C7BB6", mid = "white", high = "#D7191C",
+    midpoint = 0, limits = c(-1, 1), name = "Pearson r"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 10),
+    plot.title  = element_blank()
+  ) +
+  labs(
+    title    = NULL,
+    subtitle = "Land cover vs. total incidence correlations by district (2020)",
+    x        = NULL,
+    y        = NULL
+  )
+
+ggsave("lc_district_correlation_heatmap.pdf", width = 13, height = 9)
+```
+
+#Climate–Malaria Correlation Plots
+Correlation Heatmap — No Lag, per District
+
+
+```{r}
+cor_long_plot <- cor_long %>%
+  mutate(
+    climate_variable = paste0(
+      toupper(substr(climate_variable, 1, 1)),
+      substr(climate_variable, 2, nchar(climate_variable))
+    )
+  )
+
+ggplot(cor_long_plot, aes(x = climate_variable, y = district, fill = correlation)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = stars), color = "black", size = 5) +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                       midpoint = 0, name = "Correlation") +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 11),
+    axis.text.y = element_text(size = 10)
+  ) +
+  labs(
+    title    = NULL,
+    subtitle = "Significance: *** p<0.001  ** p<0.01  * p<0.05  . p<0.1",
+    x        = NULL,
+    y        = NULL
+  )
+
+ggsave("climate_correlation_nolag_heatmap.pdf", width = 10, height = 9)
+```
+
+#Correlation Heatmap — 1-, 2-, and 3-Month Lags, per District
+
+```{r}
+cor_long_lags_plot <- cor_long_lags %>%
+  mutate(
+    climate_variable = paste0(
+      toupper(substr(climate_variable, 1, 1)),
+      substr(climate_variable, 2, nchar(climate_variable))
+    )
+  )
+
+ggplot(cor_long_lags_plot, aes(x = lag, y = climate_variable, fill = correlation)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = stars), color = "black", size = 4, fontface = "bold") +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red",
+                       midpoint = 0, limits = c(-1, 1), name = "Correlation") +
+  facet_wrap(~district, ncol = 4) +
+  theme_minimal(base_size = 11) +
+  labs(
+    title    = NULL,
+    subtitle = "Significance: *** p<0.001  ** p<0.01  * p<0.05  . p<0.1",
+    x        = NULL,
+    y        = NULL
+  ) +
+  theme(
+    panel.grid  = element_blank(),
+    strip.text  = element_text(face = "bold"),
+    axis.text.x = element_text(size = 9)
+  )
+
+ggsave("climate_correlation_lagged_heatmap.pdf", width = 13, height = 9)
+```
+
+
+#Lag Comparison — Does Lagging Improve Correlations?
+
+```{r}
+nolag_summary <- cor_long %>%
+  group_by(climate_variable) %>%
+  summarise(mean_r = mean(abs(correlation), na.rm = TRUE), .groups = "drop") %>%
+  mutate(lag = "No Lag")
+
+lag_summary <- cor_long_lags %>%
+  group_by(climate_variable, lag) %>%
+  summarise(mean_r = mean(abs(correlation), na.rm = TRUE), .groups = "drop") %>%
+  mutate(lag = as.character(lag))
+
+lag_compare <- bind_rows(nolag_summary, lag_summary) %>%
+  mutate(lag = factor(lag, levels = c("No Lag", "1-Month Lag", "2-Month Lag", "3-Month Lag")))
+
+lag_compare_plot <- lag_compare %>%
+  mutate(
+    climate_variable = paste0(
+      toupper(substr(climate_variable, 1, 1)),
+      substr(climate_variable, 2, nchar(climate_variable))
+    )
+  )
+
+ggplot(lag_compare_plot, aes(x = lag, y = mean_r, fill = lag)) +
+  geom_col(width = 0.6) +
+  facet_wrap(~climate_variable) +
+  scale_fill_manual(values = c("No Lag"      = "grey70",
+                                "1-Month Lag" = "#64B5F6",
+                                "2-Month Lag" = "#2196F3",
+                                "3-Month Lag" = "#0D47A1")) +
+  labs(
+    title    = NULL,
+    subtitle = "Averaged across all districts",
+    x        = NULL,
+    y        = "Mean |Pearson r|",
+    fill     = "Lag"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    strip.text      = element_text(face = "bold"),
+    legend.position = "none"
+  )
+
+ggsave("lag_comparison_bar.pdf", width = 10, height = 5)
+```
+
+
+#Climate vs Malaria Incidence — Scatter Plots (ERA5 Variables)
+
+
+```{r}
+# Temperature
+p_temp <- ggplot(combined_df, aes(x = temperature, y = `Malaria incidence`)) +
+  geom_point(alpha = 0.3, color = "tomato") +
+  geom_smooth(method = "lm", color = "darkred", se = TRUE) +
+  facet_wrap(~district) +
+  labs(title = NULL,
+       x = "Temperature (°C)", y = "Incidence per 1,000") +
+  theme_minimal(base_size = 9) +
+  theme(strip.text = element_text(face = "bold", size = 7))
+p_temp
+ggsave("scatter_temperature_vs_incidence.pdf", plot = p_temp, width = 13, height = 9)
+
+# Precipitation
+p_precip <- ggplot(combined_df, aes(x = precipitation, y = `Malaria incidence`)) +
+  geom_point(alpha = 0.3, color = "steelblue") +
+  geom_smooth(method = "lm", color = "navy", se = TRUE) +
+  facet_wrap(~district) +
+  labs(title = NULL,
+       x = "Precipitation (mm)", y = "Incidence per 1,000") +
+  theme_minimal(base_size = 9) +
+  theme(strip.text = element_text(face = "bold", size = 7))
+p_precip
+ggsave("scatter_precipitation_vs_incidence.pdf", plot = p_precip, width = 13, height = 9)
+
+# Wind
+p_wind <- ggplot(combined_df, aes(x = wind, y = `Malaria incidence`)) +
+  geom_point(alpha = 0.3, color = "darkseagreen") +
+  geom_smooth(method = "lm", color = "darkgreen", se = TRUE) +
+  facet_wrap(~district) +
+  labs(title = NULL,
+       x = "Wind Speed (m/s)", y = "Incidence per 1,000") +
+  theme_minimal(base_size = 9) +
+  theme(strip.text = element_text(face = "bold", size = 7))
+p_wind
+ggsave("scatter_wind_vs_incidence.pdf", plot = p_wind, width = 13, height = 9)
+```
+
+#Final Export Dataset
+Build a clean, analysis-ready dataset containing district-month incidence with non-lagged and 1-, 2-, and 3-month lagged rainfall and temperature.
+
+```{r}
+# Build the lagged dataset from the merged_df (already has incidence_per_1k + climate)
+export_df <- merged_df %>%
+  arrange(district, date) %>%
+  group_by(district) %>%
+  mutate(
+    # Non-lagged variables
+    rainfall_current = precipitation,
+    temperature_current = temperature,
+    # Rainfall lags (using raw precipitation)
+    lag1_rainfall = lag(precipitation, 1),
+    lag2_rainfall = lag(precipitation, 2),
+    lag3_rainfall = lag(precipitation, 3),
+    # Temperature lags
+    lag1_temperature = lag(temperature, 1),
+    lag2_temperature = lag(temperature, 2),
+    lag3_temperature = lag(temperature, 3)
+  ) %>%
+  ungroup() %>%
+  # Keep only rows where all lag columns are non-missing (i.e. lag-3 month is available)
+  filter(!is.na(lag3_rainfall), !is.na(lag3_temperature)) %>%
+  # Select and rename to the requested clean column set
+  transmute(
+    District               = district,
+    Incidence_Month        = as.character(month),
+    Year                   = year,
+    Incidence_per_1k       = round(incidence_per_1k, 4),
+    rainfall_current       = round(rainfall_current, 2),
+    temperature_current    = round(temperature_current, 3),
+    lag1_rainfall          = round(lag1_rainfall,    2),
+    lag2_rainfall          = round(lag2_rainfall,    2),
+    lag3_rainfall          = round(lag3_rainfall,    2),
+    lag1_temperature       = round(lag1_temperature, 3),
+    lag2_temperature       = round(lag2_temperature, 3),
+    lag3_temperature       = round(lag3_temperature, 3)
+  ) %>%
+  # Reorder columns to the requested layout
+  select(
+    District,
+    Incidence_Month,
+    Year,
+    Incidence_per_1k,
+    rainfall_current,
+    temperature_current,
+    lag1_rainfall,
+    lag2_rainfall,
+    lag3_rainfall,
+    lag1_temperature,
+    lag2_temperature,
+    lag3_temperature
+  ) %>%
+  arrange(District, Year, match(Incidence_Month, month.name))
+
+cat("Rows in export dataset:", nrow(export_df), "\n")
+cat("Columns:", paste(names(export_df), collapse = ", "), "\n")
+glimpse(export_df)
+
+# ── Export as CSV ────────────────────────────────────────────────────────────
+write_csv(export_df, "malaria_lagged_climate_export.csv")
+
+# ── Export as Excel (formatted) ──────────────────────────────────────────────
+wb <- createWorkbook()
+addWorksheet(wb, "Malaria_Lagged_Climate")
+
+# Header style
+header_style <- createStyle(
+  fontColour = "#FFFFFF",
+  fgFill     = "#2C5F8A",
+  halign     = "CENTER",
+  textDecoration = "bold",
+  border     = "Bottom"
+)
+
+# Write data
+writeData(wb, sheet = 1, export_df, startRow = 1, startCol = 1)
+
+# Apply header style
+addStyle(wb, sheet = 1, style = header_style,
+         rows = 1, cols = 1:ncol(export_df), gridExpand = TRUE)
+
+# Auto-width columns
+setColWidths(wb, sheet = 1, cols = 1:ncol(export_df), widths = "auto")
+
+# Freeze top row
+freezePane(wb, sheet = 1, firstRow = TRUE)
+
+# Alternating row shading
+row_style <- createStyle(fgFill = "#EBF3FB")
+for (r in seq(2, nrow(export_df) + 1, by = 2)) {
+  addStyle(wb, sheet = 1, style = row_style,
+           rows = r, cols = 1:ncol(export_df), gridExpand = TRUE)
+}
+
+saveWorkbook(wb, "malaria_lagged_climate_export.xlsx", overwrite = TRUE)
+
+message("Export complete: malaria_lagged_climate_export.csv and .xlsx")
+```
+
+
+
+Interpretation
+Land Cover and Malaria Incidence (2020 Analysis)
+The two correlation tables (total incidence and per-1,000 incidence) rank each land cover class by its association with malaria burden across Malawi's districts for the year 2020. Classes with significant positive correlations likely represent environments that support mosquito breeding — such as wetlands, irrigated cropland, or dense shrubland near water bodies. Classes with significant negative correlations (e.g., urban surfaces, bare land) typically reflect environments less conducive to Anopheles breeding due to impervious surfaces or reduced moisture retention.
+
+The scatter plots show the relationship between each land cover class and malaria incidence, with points colored by significance level. The fitted regression lines (with shaded confidence intervals) illustrate the direction and strength of each association.
+
+Climate Variables and Malaria Incidence (No Lag)
+The contemporaneous correlation heatmap shows within-month relationships between ERA5 variables and incidence. Given the Anopheles life cycle (≈2–4 weeks from egg to infectious bite), same-month correlations are expected to be modest. Districts showing strong same-month temperature correlations may lie in regions where temperatures are already near the optimal range for parasite development year-round.
+
+Lagged Climate Correlations (1-, 2-, and 3-Month Lags)
+The 1-, 2-, and 3-month lag analysis is central to predictive modelling. Precipitation is expected to show its strongest positive correlation at lag 1–3 months, reflecting the time needed for standing water to accumulate and larval cohorts to reach adulthood. Temperature typically acts at shorter lags because it primarily modulates the extrinsic incubation period of Plasmodium falciparum (≈10–14 days at 25°C). Wind is generally a weak predictor.
+
+Summary for Model Development
+Variable	Expected Lag	Rationale
+Precipitation	1–3 months	Breeding site formation and larval development
+Temperature	0–1 month	Affects extrinsic incubation period
+Wind speed	0 months	Weak causal pathway; include as control only
+Land cover class	Static	Background susceptibility modifier per district
+Variables showing consistent, statistically significant correlations at a given lag should be prioritised as features in the subsequent predictive model (e.g., negative binomial regression, random forest, or LSTM). Land cover variables should be included as static district-level covariates. The exported dataset (malaria_lagged_climate_export.csv / .xlsx) includes both current-month and lagged climate variables, ready for direct model ingestion.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
