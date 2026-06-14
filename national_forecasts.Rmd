@@ -35,7 +35,13 @@ library(tseries)
 library(lme4)
 library(forecast)
 library(kableExtra)
+library(lubridate)
+library(tidyr)
+library(tibble)
+```
 
+
+```{r}
 source("aux_functions.R")
 ```
 
@@ -289,10 +295,11 @@ Now we will start to build some SARIMA and SARAIMAX models.
 "ts_nat" is the national timeseries of Malaria incidence
 Let's try to come up with some models and model evaluation approaches for this data. Later we will do something similar to each district.
 
+```{r}
+correct_incidence_data <- read_csv("malaria_lagged_climate_export.csv")
 
-
-
-
+head(correct_incidence_data)
+```
 We need to make the National data in a format that we can use to fit the model.
 
 ```{r}
@@ -318,6 +325,9 @@ What we will fit the model based on a window of 60 months. This is basically the
 
 ```{r}
 baseline_models <- rolling_baseline(national_incidence, n_windows = 23)
+
+
+head(national_incidence)
 ```
 
 ```{r}
@@ -331,148 +341,251 @@ sarimax_models <- rolling_sarima(
   SARIMAX = TRUE,
   xreg_col = "temperature"
 )
+
 ```
 
-
-!
 !
 !
 !
 ! I need to create a function with xreg values for the sarimax
-! I need to setup the quantiles in a way that I can run WIS
 !
 !
 !
+
+```{r}
+
+temp_exog <- create_future_exog(
+  data = national_incidence,
+  variable = "temperature"
+)
+
+```
+
+
+```{r}
+
+temp_exog_1lag <- lapply(
+  1:nrow(temp_exog$lag1),
+  function(i) {
+    as.matrix(temp_exog$lag1[i, c("h1", "h2", "h3")])
+  }
+)
+
+temp_exog_2lag <- lapply(
+  1:nrow(temp_exog$lag2),
+  function(i) {
+    as.matrix(temp_exog$lag2[i, c("h1", "h2", "h3")])
+  }
+)
+
+temp_exog_3lag <- lapply(
+  1:nrow(temp_exog$lag3),
+  function(i) {
+    as.matrix(temp_exog$lag3[i, c("h1", "h2", "h3")])
+  }
+)
+```
 
 ### National-Level Seasonal Forecasts
 
 ```{r}
 # Plot national forecast
-SARIMA_forecasts <- forecast_SARIMAs(sarima_models, h = 4)
+SARIMA_forecasts <- forecast_SARIMAs1(sarima_models, h = 3)
 
 # Plot national forecast
-BASELINE_forecasts <- forecast_baselines(baseline_models, h = 4)
+BASELINE_forecasts <- forecast_baselines1(baseline_models, h = 3)
+
 
 # Plot national forecast
-#SARIMAX_forecasts <- forecast_baselines(sarimax_models, h = 4)
+sarimax_forecasts_3lag <- forecast_SARIMAs1(
+  model_list = sarimax_models,
+  h = 3, future_xreg_list = temp_exog_3lag
+)
+
+# Plot national forecast
+sarimax_forecasts_2lag <- forecast_SARIMAs1(
+  model_list = sarimax_models,
+  h = 3, future_xreg_list = temp_exog_2lag
+)
+
+# Plot national forecast
+sarimax_forecasts_1lag <- forecast_SARIMAs1(
+  model_list = sarimax_models,
+  h = 3, future_xreg_list = temp_exog_1lag
+)
+
 ```
 
 Get quantiles for each forecast
 
 ```{r}
 # Get quantiles
-SARIMA_quantiles <- get_forecasted_quantiles(SARIMA_forecasts)
+SARIMA_quantiles <- get_forecasted_quantiles1(SARIMA_forecasts)
 
 # Get quantiles
-BASELINE_quantiles <- get_forecasted_quantiles(satimax_models_forecasts)
+BASELINE_quantiles <- get_forecasted_quantiles1(BASELINE_forecasts)
+
+# Get quantiles
+SARIMAX_3_quantiles <- get_forecasted_quantiles1(sarimax_forecasts_3lag)
+
+# Get quantiles
+SARIMAX_2_quantiles <- get_forecasted_quantiles1(sarimax_forecasts_2lag)
+
+# Get quantiles
+SARIMAX_TEMP_1LAG <- get_forecasted_quantiles1(sarimax_forecasts_1lag)
+
+```
+
+Organize the quantiles in a way we may calculate WIS and MAE
+
+```{r}
+
+submission_1 <- format_forecast_for_WIS(SARIMAX_TEMP_1LAG)
+
+formatted_baseline_forecasts<-format_forecast_for_WIS(BASELINE_quantiles)
+
+head(submission_1)
+```
+
+```{r}
+library(covidHubUtils)
+
+my_forecast_scores<-covidHubUtils::score_forecasts(predictive_quantiles_tb, truth)
+
+```
+
+!
+! Using temperature and rainfall, the baseline and the sarima
+! we will have almost 10 models
+!
+! if we use a data transformation apporach we will have
+! close to 20 models, which I think it will be enough
+!
+!
+! I don't think we should use wind
+!
+! We may use some data transformations
+!
+!
+! I need temperature and rainfall with no lag
+!
+! I need to forecast the correc 0 - 99 percentatilie similar to the other model
+! 
+! I need to check if the rolling windows are correct
+!
+! 
+!
+! I need to setup the quantiles in a way that I can run WIS
+!
+!
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+
+
+
+plot_forecast_window <- function(df, model_list, window_id, model_name, fc_date) {
+  
+  plot_df <- df %>%
+    filter(
+      model == model_name,
+      forecast_date == as.Date(fc_date),
+      type == "quantile"
+    ) %>%
+    mutate(quantile = as.numeric(quantile)) %>%
+    select(target_end_date, quantile, value) %>%
+    tidyr::pivot_wider(
+      names_from = quantile,
+      values_from = value
+    )
+
+  train_df <- model_list[[window_id]]$data %>%
+    select(Date, incidence_per_1k)
+
+  ggplot() +
+    # observed/training data
+    geom_line(
+      data = train_df,
+      aes(x = Date, y = incidence_per_1k),
+      linewidth = 0.8
+    ) +
+    geom_point(
+      data = train_df,
+      aes(x = Date, y = incidence_per_1k),
+      size = 1.5
+    ) +
+
+    # forecast intervals
+    geom_ribbon(
+      data = plot_df,
+      aes(x = target_end_date, ymin = `0.025`, ymax = `0.975`),
+      alpha = 0.2
+    ) +
+    geom_ribbon(
+      data = plot_df,
+      aes(x = target_end_date, ymin = `0.1`, ymax = `0.9`),
+      alpha = 0.3
+    ) +
+    geom_ribbon(
+      data = plot_df,
+      aes(x = target_end_date, ymin = `0.25`, ymax = `0.75`),
+      alpha = 0.4
+    ) +
+    geom_line(
+      data = plot_df,
+      aes(x = target_end_date, y = `0.5`),
+      linewidth = 1
+    ) +
+    geom_point(
+      data = plot_df,
+      aes(x = target_end_date, y = `0.5`),
+      size = 2
+    ) +
+    theme_minimal() +
+    labs(
+      x = "Date",
+      y = "Incidence per 1k",
+      title = paste(model_name, "forecast from", fc_date)
+    )
+}
+
+plot_forecast_window(
+  df = formatted_baseline_forecasts,
+  model_list = baseline_models,
+  window_id = 1,
+  model_name = "BASELINE_quantiles",
+  fc_date = "2022-12-01"
+)
+
+
 
 ```
 
 
 ```{r}
-# Convert matrix to dataframe
-qdf <- as.data.frame(SARIMA_quantiles[[2]])
-
-qdf$horizon <- 1:nrow(qdf)
-
-# Plot
-ggplot(qdf, aes(x = horizon)) +
-
-  # 95% interval
-  geom_ribbon(
-    aes(
-      ymin = `0.025`,
-      ymax = `0.975`
-    ),
-    alpha = 0.2
-  ) +
-
-  # 80% interval
-  geom_ribbon(
-    aes(
-      ymin = `0.1`,
-      ymax = `0.9`
-    ),
-    alpha = 0.3
-  ) +
-
-  # 50% interval
-  geom_ribbon(
-    aes(
-      ymin = `0.25`,
-      ymax = `0.75`
-    ),
-    alpha = 0.4
-  ) +
-
-  # Median
-  geom_line(
-    aes(y = `0.5`),
-    linewidth = 1
-  ) +
-
-  geom_point(
-    aes(y = `0.5`),
-    size = 2
-  ) +
-
+submission_1 %>%
+  filter(
+    model == "SARIMAX_TEMP_1LAG",
+    type == "quantile",
+    quantile == 0.5
+  ) %>%
+  ggplot(aes(
+    x = target_end_date,
+    y = value,
+    color = as.factor(forecast_date),
+    group = forecast_date
+  )) +
+  geom_line() +
+  geom_point() +
   theme_minimal() +
-
   labs(
-    x = "Forecast horizon",
-    y = "Predicted incidence",
-    title = "ARIMA predictive quantiles"
+    x = "Target end date",
+    y = "Median predicted incidence",
+    color = "Forecast date",
+    title = "Median forecasts by forecast window"
   )
 
 ```
 
-
-```{r}
-
-for (i in 1:23) {
-  print(
-    autoplot(forecast_list[[i]]) +
-      labs(y = "Malaria incidence per 1k", x = "Year") +
-      theme_minimal()
-  )
-}
-
-national_incidence
-```
-
-```{r}
-
-
-actual_incidence <- list()
-
-for (i in 1:23) {
-  incidence_window <- national_incidence[(61 + i):(64 + i), ]
-  actual_incidence [[i]] <- incidence_window
-  print(i)
-}
-
-
-for (i in 1:23) {
-  
-  fc <- forecast_list[[i]]
-  actual_df <- actual_incidence[[i]]
-  
-  # Extract forecast time index
-  fc_time <- time(fc$mean)
-  
-  # Build dataframe for plotting
-  actual_plot <- data.frame(
-    time = fc_time,
-    value = actual_df$incidence_per_1k
-  )
-  
-  print(
-    autoplot(fc) +
-      geom_point(data = actual_plot,
-                 aes(x = time, y = value),
-                 color = "red", size = 2) +
-      labs(y = "Malaria incidence per 1k", x = "Year") +
-      theme_minimal()
-  )
-}
-```
