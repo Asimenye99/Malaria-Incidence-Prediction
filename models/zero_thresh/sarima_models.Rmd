@@ -50,7 +50,7 @@ Split the data by district creating a list of dataframes and make sure the data 
 ```{r}
 
 # Transforming the data in a list of dataframes by District
-district_data_list <- correct_incidence_data %>%
+districts_data_list <- correct_incidence_data %>%
   mutate(
     Date = my(paste(Incidence_Month, Year))
   ) %>%
@@ -67,9 +67,9 @@ Fit the baseline of each district (single dataframe in the list) on a rollinnf w
 
 # Fit each model for each district on a rolling window
 sarima_models <- lapply(
-  district_data_list,
+  districts_data_list,
   rolling_sarima,
-  n_windows = 22,
+  n_windows = 19,
   window_size = 60
 )
 

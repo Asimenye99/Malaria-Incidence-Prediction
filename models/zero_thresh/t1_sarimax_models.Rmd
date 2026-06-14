@@ -86,10 +86,10 @@ Fit the baseline of each district (single dataframe in the list) on a rollinnf w
 sarimax_models <- lapply(
   district_data_list,
   rolling_sarima,
-  n_windows = 22,
+  n_windows = 19,
   window_size = 60,
   SARIMAX = TRUE,
-  xreg_col = "lag1_temperature"
+  xvar_col = "lag1_temperature"
 )
 
 ```
@@ -98,11 +98,13 @@ Get exogenous variables for forecasting
 
 ```{r}
 
-T1_exog <- lapply(
+T1_fut_exog <- lapply(
   district_data_list,
   get_exog_variables,
   variable = "lag1_temperature",
-  lag = 1
+  lag = 1,
+  n_windows = 19, 
+  train_length = 60
 )
 
 ```
@@ -121,7 +123,7 @@ Need to test
 SARIMAX_model_forecasts <- mapply(
   function(model_obj, exog_df) {
     
-    future_xreg_list <- split(
+    future_xvar_list <- split(
       exog_df[, c("h1", "h2", "h3")],
       exog_df$window
     )
@@ -129,11 +131,11 @@ SARIMAX_model_forecasts <- mapply(
     forecast_SARIMAs(
       model_obj,
       h = 3,
-      future_xreg_list = future_xreg_list
+      future_xvar_list = future_xvar_list
     )
   },
   sarimax_models,
-  T1_exog,
+  T1_fut_exog,
   SIMPLIFY = FALSE
 )
 

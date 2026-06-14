@@ -69,7 +69,7 @@ Fit the baseline of each district (single dataframe in the list) on a rollinnf w
 baseline_models <- lapply(
   district_data_list,
   rolling_baseline,
-  n_windows = 22,
+  n_windows = 19,
   window_size = 60
 )
 
